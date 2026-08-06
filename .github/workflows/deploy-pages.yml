@@ -59,3 +59,13 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          # deploy-pages defaults to giving up after 10 minutes, and on timeout
+          # it actively CANCELS the deployment. Every previous attempt died at
+          # exactly 10:05 that way while Pages still reported
+          # "deployment_in_progress" — i.e. the deploy was progressing and got
+          # killed rather than failing on its own. Allow 30 minutes so a slow
+          # deployment can actually finish.
+          timeout: 1800000
+          # Tolerate more transient status-check errors before bailing out.
+          error_count: 20
