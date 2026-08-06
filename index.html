@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArduStudio — Arduboy game maker</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%230d1117'/><rect x='3' y='4' width='10' height='6' rx='1' fill='%23d8ecff'/><circle cx='5' cy='12.5' r='1.4' fill='%23d8ecff'/><circle cx='11' cy='12.5' r='1.4' fill='%23d8ecff'/></svg>">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <span class="logo">▚</span> <strong>ArduStudio</strong>
+    <span class="subtitle">game maker for Arduboy FX‑C</span>
+  </div>
+  <nav id="tabs">
+    <button data-tab="scenes" class="tab active">Scenes</button>
+    <button data-tab="tiles" class="tab">Tiles</button>
+    <button data-tab="sprites" class="tab">Sprites</button>
+    <button data-tab="image" class="tab">Image Tool</button>
+    <button data-tab="play" class="tab">▶ Play</button>
+    <button data-tab="export" class="tab">Export</button>
+    <button data-tab="help" class="tab">Help</button>
+  </nav>
+  <div class="topbar-right">
+    <span id="projectName" class="project-name"></span>
+    <span id="saveStatus" class="save-status"></span>
+  </div>
+</header>
+
+<main>
+  <!-- ======================= SCENES ======================= -->
+  <section id="tab-scenes" class="tabpane active">
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">Scenes
+          <button id="addScene" class="mini" title="Add scene">＋</button>
+        </div>
+        <ul id="sceneList" class="item-list"></ul>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Tool</div>
+        <div id="sceneTools" class="tool-row">
+          <button data-tool="paint" class="tool active" title="Paint tiles (drag)">✎ Paint</button>
+          <button data-tool="erase" class="tool" title="Erase to tile 0">⌫ Erase</button>
+          <button data-tool="actor" class="tool" title="Place a new actor">☺ Actor</button>
+          <button data-tool="trigger" class="tool" title="Drag a trigger area">▦ Trigger</button>
+          <button data-tool="select" class="tool" title="Select / move actors and triggers">➤ Select</button>
+          <button data-tool="start" class="tool" title="Set player start position">⚑ Start</button>
+        </div>
+        <div class="panel-title">Tile palette</div>
+        <div id="scenePalette" class="palette"></div>
+      </div>
+    </aside>
+    <div class="editor-center">
+      <canvas id="sceneCanvas" width="512" height="256"></canvas>
+      <div id="sceneStatus" class="statusline"></div>
+    </div>
+    <aside class="sidebar right">
+      <div id="inspector" class="panel"></div>
+    </aside>
+  </section>
+
+  <!-- ======================= TILES ======================= -->
+  <section id="tab-tiles" class="tabpane">
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">Tiles
+          <button id="addTile" class="mini" title="Add tile">＋</button>
+        </div>
+        <div id="tileList" class="asset-grid"></div>
+      </div>
+    </aside>
+    <div class="editor-center">
+      <div id="tileEditor"></div>
+    </div>
+  </section>
+
+  <!-- ======================= SPRITES ======================= -->
+  <section id="tab-sprites" class="tabpane">
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">Sprites
+          <button id="addSprite" class="mini" title="Add sprite">＋</button>
+        </div>
+        <div id="spriteList" class="asset-grid"></div>
+      </div>
+    </aside>
+    <div class="editor-center">
+      <div id="spriteEditor"></div>
+    </div>
+  </section>
+
+  <!-- ======================= IMAGE TOOL ======================= -->
+  <section id="tab-image" class="tabpane">
+    <div class="editor-center wide">
+      <div class="panel">
+        <div class="panel-title">PNG → Arduboy converter</div>
+        <p class="hint">Load any image; it is thresholded to 1‑bit. Import 8×8 slices as tiles,
+          import the whole image as a sprite, or copy the C array for use in your own sketches.</p>
+        <div class="form-row">
+          <input type="file" id="imgFile" accept="image/*">
+          <label>Threshold <input type="range" id="imgThreshold" min="1" max="254" value="128"></label>
+          <label><input type="checkbox" id="imgInvert"> Invert</label>
+        </div>
+        <canvas id="imgPreview" class="checker"></canvas>
+        <div class="form-row">
+          <button id="imgImportTiles" class="btn">Import as 8×8 tiles</button>
+          <button id="imgImportSprite" class="btn">Import as sprite</button>
+          <button id="imgCopyC" class="btn">Copy C array</button>
+          <label><input type="checkbox" id="imgHeader" checked> Sprites format (w,h header)</label>
+        </div>
+        <textarea id="imgCArray" class="code" rows="10" spellcheck="false" placeholder="// C array output appears here"></textarea>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= PLAY ======================= -->
+  <section id="tab-play" class="tabpane">
+    <div class="editor-center">
+      <div class="play-wrap">
+        <div class="arduboy-shell">
+          <canvas id="playCanvas" width="512" height="256" tabindex="0"></canvas>
+          <div class="shell-buttons">
+            <span class="dpad">◀ ▲ ▼ ▶ move</span>
+            <span class="ab"><b>A</b> = Z / Space&nbsp;&nbsp;<b>B</b> = X / Shift</span>
+          </div>
+        </div>
+        <div class="play-controls">
+          <button id="playStart" class="btn primary">▶ Restart</button>
+          <button id="playPause" class="btn">⏸ Pause</button>
+          <label><input type="checkbox" id="playSound" checked> Sound</label>
+        </div>
+        <div id="playWarnings" class="warnings"></div>
+        <div class="panel">
+          <div class="panel-title">Variables (live)</div>
+          <table id="varWatch" class="var-watch"></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= EXPORT ======================= -->
+  <section id="tab-export" class="tabpane">
+    <div class="editor-center wide">
+      <div class="panel">
+        <div class="panel-title">Project</div>
+        <div class="form-row">
+          <label>Name <input type="text" id="expName"></label>
+          <label>Author <input type="text" id="expAuthor"></label>
+        </div>
+        <div class="panel-title">Variables</div>
+        <div id="varEditor"></div>
+        <div class="panel-title">Player</div>
+        <div class="form-row">
+          <label>Player sprite <select id="expPlayerSprite"></select></label>
+          <span class="hint">Start position: use the ⚑ Start tool in the scene editor.</span>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Arduboy sketch (.ino)</div>
+        <p class="hint">
+          Generates a complete Arduino sketch for the <b>Arduboy FX‑C</b> (also runs on Arduboy and Arduboy FX).
+          Compile it in the Arduino IDE with the <b>Arduboy2</b> library installed and the board set to
+          <b>Arduboy</b> / <b>Arduino Leonardo</b>, then upload over USB‑C.
+        </p>
+        <div class="form-row">
+          <button id="expIno" class="btn primary">⬇ Download .ino</button>
+          <button id="expCopyIno" class="btn">Copy sketch to clipboard</button>
+          <span id="expStats" class="hint"></span>
+        </div>
+        <div id="expWarnings" class="warnings"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Project file</div>
+        <div class="form-row">
+          <button id="expSave" class="btn">⬇ Save project (.ardustudio.json)</button>
+          <button id="expLoad" class="btn">⬆ Load project…</button>
+          <input type="file" id="expLoadFile" accept=".json,.ardustudio" hidden>
+          <button id="expNew" class="btn">✦ New blank project</button>
+          <button id="expDemo" class="btn">★ Load demo (Key Quest)</button>
+        </div>
+        <p class="hint">Projects also autosave to this browser (localStorage) as you edit.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= HELP ======================= -->
+  <section id="tab-help" class="tabpane">
+    <div class="editor-center wide">
+      <div id="helpContent" class="panel help"></div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
