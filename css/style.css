@@ -244,6 +244,21 @@ canvas { image-rendering: pixelated; }
 .add-event-row { margin-top: 6px; }
 select.add-event { max-width: 100%; }
 
+/* joypad button picker in the script editor */
+.button-picker { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; width: 100%; }
+.btn-key {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.btn-key:hover { border-color: var(--accent); }
+.btn-key.active { background: #14405c; border-color: var(--accent); color: #fff; }
+
 /* RGB LED swatch in the script editor */
 .led-swatch {
   width: 22px; height: 22px;

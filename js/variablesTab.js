@@ -19,7 +19,11 @@ function collectUsages(project) {
   const walk = (events, where) => {
     for (const ev of events || []) {
       if (HOW[ev.type]) add(ev.varId, where, HOW[ev.type]);
-      if (ev.type === 'IF_VAR') { walk(ev.then, where); walk(ev.else, where); }
+      // Menus write their result into a variable too.
+      if (ev.type === 'MENU' || ev.type === 'CHOICE') add(ev.varId, where, 'menu');
+      // Recurse into every kind of nested script list.
+      if (ev.type === 'IF_VAR' || ev.type === 'IF_INPUT') { walk(ev.then, where); walk(ev.else, where); }
+      if (ev.type === 'ATTACH_SCRIPT') walk(ev.script, `${where} → ${String(ev.button).toUpperCase()} button`);
     }
   };
   for (const sc of project.scenes) {
