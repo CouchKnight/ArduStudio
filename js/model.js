@@ -19,6 +19,7 @@ export const MAX_SPRITES = 32;
 export const MAX_FRAMES = 4;
 export const MAX_SONGS = 32;
 export const MAX_SONG_NOTES = 192;
+export const MAX_MENU_OPTIONS = 8;
 
 // Tile dimensions of a scene (scenes can span multiple screens and scroll).
 export function sceneCols(scene) { return SCENE_W * (scene.screensX || 1); }
@@ -249,6 +250,16 @@ export function makeEvent(type) {
     case 'LOAD_GAME':   return { id: uid('ev'), type };
     case 'SAVE_CHECK':  return { id: uid('ev'), type, varId: '' };
     case 'DELETE_SAVE': return { id: uid('ev'), type };
+    // RGB LED. Analog mode is the one most games want: one call sets all three
+    // channels to a PWM brightness. Digital mode frees the PWM hardware and
+    // switches channels fully on/off instead.
+    case 'SET_LED':     return { id: uid('ev'), type, mode: 'analog', r: 255, g: 0, b: 0, dr: false, dg: false, db: false };
+    case 'MENU':        return {
+      id: uid('ev'), type, varId: '', layout: 'menu',
+      options: ['Option 1', 'Option 2'],
+      lastIsZero: false, cancelB: false,
+    };
+    case 'CHOICE':      return { id: uid('ev'), type, varId: '', trueLabel: 'Yes', falseLabel: 'No' };
     case 'END_SCRIPT':  return { id: uid('ev'), type };
     default: throw new Error(`Unknown event type ${type}`);
   }
@@ -256,6 +267,8 @@ export function makeEvent(type) {
 
 export const EVENT_DEFS = [
   { type: 'TEXT',         label: 'Show Dialogue',     group: 'Dialogue' },
+  { type: 'MENU',         label: 'Display Menu',      group: 'Dialogue' },
+  { type: 'CHOICE',       label: 'Display Multiple Choice', group: 'Dialogue' },
   { type: 'SWITCH_SCENE', label: 'Change Scene',      group: 'Scene' },
   { type: 'PLAYER_POS',   label: 'Teleport Player',   group: 'Scene' },
   { type: 'SET_TILE',     label: 'Set Tile',          group: 'Scene' },
@@ -265,6 +278,7 @@ export const EVENT_DEFS = [
   { type: 'ACTOR_HIDE',   label: 'Hide Actor',        group: 'Actors' },
   { type: 'ACTOR_SHOW',   label: 'Show Actor',        group: 'Actors' },
   { type: 'ACTOR_MOVE',   label: 'Move Actor',        group: 'Actors' },
+  { type: 'SET_LED',      label: 'Set RGB LED',       group: 'Hardware' },
   { type: 'TONE',         label: 'Play Tone',         group: 'Sound' },
   { type: 'PLAY_SONG',    label: 'Play Song',         group: 'Sound' },
   { type: 'STOP_SONG',    label: 'Stop Song',         group: 'Sound' },
@@ -485,6 +499,8 @@ export function makeDemoProject() {
   p.author = 'ArduStudio demo';
   const [vHasKey, vIntroSeen] = [p.variables[0], p.variables[1]];
   vIntroSeen.name = 'intro_seen';
+  const vAskedWay = { id: uid('var'), name: 'asked_way' };
+  p.variables.push(vAskedWay);
 
   const T = { empty: 0, floor: 1, wall: 2, door: 3, tree: 4, water: 5, chest: 6, key: 7 };
   const outdoors = p.scenes[0];
@@ -536,7 +552,16 @@ export function makeDemoProject() {
     const t1 = makeEvent('TEXT'); t1.text = 'You found it! Use the key on the north door.';
     const step = makeEvent('ACTOR_MOVE'); step.target = 'self'; step.x = 4; step.y = 5;
     const e1 = makeEvent('TEXT'); e1.text = 'The door key fell in the lake up north. A slime swallowed it!';
-    iff.then = [t1, step]; iff.else = [e1];
+    // Then ask before giving directions — shows off Display Multiple Choice.
+    const ask = makeEvent('TEXT'); ask.text = 'Need directions to the lake?';
+    const choice = makeEvent('CHOICE');
+    choice.varId = vAskedWay.id; choice.trueLabel = 'Yes'; choice.falseLabel = 'No';
+    const answer = makeEvent('IF_VAR');
+    answer.varId = vAskedWay.id; answer.cmp = '=='; answer.value = 1;
+    const yes = makeEvent('TEXT'); yes.text = 'Head east, then north through the gap in the wall.';
+    const no = makeEvent('TEXT'); no.text = 'Suit yourself!';
+    answer.then = [yes]; answer.else = [no];
+    iff.then = [t1, step]; iff.else = [e1, ask, choice, answer];
     villager.script = [iff];
   }
   outdoors.actors.push(villager);
@@ -551,8 +576,12 @@ export function makeDemoProject() {
     const t1 = makeEvent('TEXT'); t1.text = 'The slime burps up a rusty key!';
     const sv = makeEvent('SET_VAR'); sv.varId = vHasKey.id; sv.value = 1;
     const jingle = makeEvent('PLAY_SONG'); jingle.songId = sngKey.id;
+    // Flash the RGB LED green as pickup feedback, then turn it off.
+    const ledOn = makeEvent('SET_LED'); ledOn.r = 0; ledOn.g = 255; ledOn.b = 0;
+    const wait = makeEvent('WAIT'); wait.frames = 20;
+    const ledOff = makeEvent('SET_LED'); ledOff.r = 0; ledOff.g = 0; ledOff.b = 0;
     const hide = makeEvent('ACTOR_HIDE'); hide.target = 'self';
-    iff.then = [t1, sv, jingle, hide];
+    iff.then = [t1, sv, jingle, ledOn, wait, ledOff, hide];
     iff.else = [];
     slime.script = [iff];
   }

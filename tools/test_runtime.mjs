@@ -5,9 +5,29 @@
 //
 // Usage: node tools/test_runtime.mjs
 
-import { makeDemoProject } from '../js/model.js';
+import { makeDemoProject, makeEvent as makeEventOfType } from '../js/model.js';
 import { compileProject } from '../js/compiler.js';
 import { Emulator, BTN, memoryStorage } from '../js/emulator.js';
+
+// Tap a button for one frame, then release it — justPressed only fires on the
+// frame a button goes down.
+function press(e, button) {
+  e.setButtons(button); e.step();
+  e.setButtons(0); e.step();
+}
+
+// Face actor `idx` from below, press A to start its script, and (optionally)
+// run the script to completion.
+function runActorScript(e, idx, runToEnd = true) {
+  const a = e.actors[idx];
+  e.player.px = a.tx * 8; e.player.py = (a.ty + 1) * 8;
+  e.player.tx = a.tx; e.player.ty = a.ty + 1;
+  e.player.fx = 0; e.player.fy = -1;
+  e.script.active = false; e.text = null;
+  press(e, BTN.A);
+  if (!runToEnd) return;
+  for (let i = 0; i < 400 && e.script.active && !e.menu; i++) { e.setButtons(0); e.step(); }
+}
 
 let tones = [];
 const project = makeDemoProject();
@@ -30,13 +50,21 @@ function tap(button) {
   steps(1, button);
   steps(1, 0);
 }
-// Dismiss all pages of the current dialogue.
-function dismissDialogue(maxPages = 10) {
-  for (let i = 0; i < maxPages && emu.text; i++) {
+// Dismiss all pages of the current dialogue, accepting the default option of
+// any menu the script opens along the way, then let the rest of the script
+// (waits, scripted actor moves) run out so control returns to the player.
+function dismissDialogue(maxPages = 12) {
+  for (let i = 0; i < maxPages && (emu.text || emu.menu); i++) {
+    if (emu.menu) {
+      tap(BTN.A);      // take the highlighted option
+      steps(2, 0);
+      continue;
+    }
     steps(200, 0);     // let the typewriter finish
     tap(BTN.A);        // next page / close
     steps(2, 0);
   }
+  for (let i = 0; i < 600 && emu.script.active && !emu.text && !emu.menu; i++) steps(1, 0);
 }
 function playerTile() {
   return [Math.round(emu.player.px / 8), Math.round(emu.player.py / 8)];
@@ -102,7 +130,11 @@ dismissDialogue();
 assert(emu.vars[0] === 1, 'has_key variable set');
 assert(slime.hidden, 'slime hidden after giving the key');
 assert(tones.length >= 1 && tones[0][0] === 659, `key jingle song started (${JSON.stringify(tones)})`);
-assert(emu.song.idx === 0, 'song 0 (Key jingle) is playing');
+// The pickup script flashes the LED and waits 20 frames, which outlasts the
+// 3-note jingle (~18 frames), so by now every note has played and it has ended.
+assert(tones.map(([f]) => f).join() === '659,784,1047', `all 3 jingle notes played (${tones.map(([f]) => f).join()})`);
+assert(emu.song.idx === -1, 'jingle finished cleanly');
+assert(emu.led.r === 0 && emu.led.g === 0 && emu.led.b === 0, 'pickup LED flash turned back off');
 
 console.log('— scene persistence —');
 // Walk back to the village via the west exit trigger at (0,5).
@@ -248,6 +280,121 @@ console.log('— tile override table —');
   // Reloading the scene clears overrides, as on hardware.
   e.loadScene(0, 2, 3, false);
   assert(e.overrides.length === 0 && e.tileAt(0, 0) === before, 'scene reload restores base tiles');
+}
+
+console.log('— RGB LED —');
+{
+  const e = new Emulator(compiled, { onTone: () => {} });
+  assert(e.led.r === 0 && e.led.g === 0 && e.led.b === 0, 'LED starts off');
+
+  // Analog: the slime's pickup script flashes green then clears it.
+  const proj = makeDemoProject();
+  const led = proj.scenes[0].actors[0]; // villager, reused as a scratch script host
+  led.script = [
+    Object.assign(makeEventOfType('SET_LED'), { mode: 'analog', r: 255, g: 0, b: 128 }),
+  ];
+  const c2 = compileProject(proj);
+  const e2 = new Emulator(c2, { onTone: () => {} });
+  runActorScript(e2, 0);
+  assert(e2.led.mode === 'analog' && e2.led.r === 255 && e2.led.g === 0 && e2.led.b === 128,
+    `analog LED set to 255,0,128 (got ${e2.led.r},${e2.led.g},${e2.led.b})`);
+
+  // Digital: channels are on/off only.
+  const proj3 = makeDemoProject();
+  proj3.scenes[0].actors[0].script = [
+    Object.assign(makeEventOfType('SET_LED'), { mode: 'digital', dr: true, dg: false, db: true }),
+  ];
+  const e3 = new Emulator(compileProject(proj3), { onTone: () => {} });
+  runActorScript(e3, 0);
+  assert(e3.led.mode === 'digital' && e3.led.r === 255 && e3.led.g === 0 && e3.led.b === 255,
+    `digital LED lights red+blue only (got ${e3.led.r},${e3.led.g},${e3.led.b})`);
+}
+
+console.log('— Display Menu —');
+{
+  // Four options in the right-hand column, B cancels.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].actors[0].script = [Object.assign(makeEventOfType('MENU'), {
+    varId: v.id, layout: 'menu', options: ['Sword', 'Shield', 'Potion', 'Leave'],
+    lastIsZero: false, cancelB: true,
+  })];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `menu compiles without warnings (${c.warnings.join('; ') || 'none'})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0, false);
+  assert(e.menu && e.menu.count === 4, 'menu opened with 4 options');
+  assert(e.script.active, 'script is blocked while the menu is open');
+  assert(e.menu.labels[0] === 'Sword', `labels are not word-wrapped (got "${e.menu.labels[0]}")`);
+
+  // Down twice then A selects the third option -> value 3.
+  press(e, BTN.DOWN); press(e, BTN.DOWN);
+  assert(e.menu.sel === 2, `cursor moved to option 3 (sel=${e.menu.sel})`);
+  press(e, BTN.A);
+  assert(!e.menu, 'menu closed after A');
+  assert(e.vars[0] === 3, `variable set to 3 (got ${e.vars[0]})`);
+
+  // Up from the first option wraps to the last.
+  const e2 = new Emulator(c, { onTone: () => {} });
+  runActorScript(e2, 0, false);
+  press(e2, BTN.UP);
+  assert(e2.menu.sel === 3, `up wraps to the last option (sel=${e2.menu.sel})`);
+
+  // B cancels to 0 when enabled.
+  const e3 = new Emulator(c, { onTone: () => {} });
+  runActorScript(e3, 0, false);
+  e3.vars[0] = 9;
+  press(e3, BTN.B);
+  assert(!e3.menu && e3.vars[0] === 0, `B cancels to 0 (got ${e3.vars[0]})`);
+}
+
+console.log('— menu: last option sets 0, B disabled —');
+{
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].actors[0].script = [Object.assign(makeEventOfType('MENU'), {
+    varId: v.id, layout: 'dialogue', options: ['Buy', 'Sell', 'Exit'],
+    lastIsZero: true, cancelB: false,
+  })];
+  const c = compileProject(proj);
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0, false);
+  e.vars[0] = 7;
+  press(e, BTN.B);
+  assert(e.menu && e.vars[0] === 7, 'B does nothing when cancel is disabled');
+  press(e, BTN.DOWN); press(e, BTN.DOWN); // move to "Exit"
+  press(e, BTN.A);
+  assert(e.vars[0] === 0, `last option yields 0 (got ${e.vars[0]})`);
+
+  // Dialogue layout: right/left hop a column (3 options -> 2 rows per column).
+  const e2 = new Emulator(c, { onTone: () => {} });
+  runActorScript(e2, 0, false);
+  press(e2, BTN.RIGHT);
+  assert(e2.menu.sel === 2, `right jumps to the second column (sel=${e2.menu.sel})`);
+  press(e2, BTN.LEFT);
+  assert(e2.menu.sel === 0, `left returns to the first column (sel=${e2.menu.sel})`);
+}
+
+console.log('— Display Multiple Choice —');
+{
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].actors[0].script = [Object.assign(makeEventOfType('CHOICE'), {
+    varId: v.id, trueLabel: 'Yes', falseLabel: 'No',
+  })];
+  const c = compileProject(proj);
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0, false);
+  assert(e.menu && e.menu.count === 2, 'choice opens a 2-option menu');
+  press(e, BTN.A);
+  assert(e.vars[0] === 1, `first option is true / 1 (got ${e.vars[0]})`);
+
+  const e2 = new Emulator(c, { onTone: () => {} });
+  runActorScript(e2, 0, false);
+  press(e2, BTN.DOWN);
+  press(e2, BTN.A);
+  assert(e2.vars[0] === 0, `second option is false / 0 (got ${e2.vars[0]})`);
 }
 
 console.log('— bytecode sanity —');

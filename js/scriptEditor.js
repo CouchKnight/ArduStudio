@@ -2,7 +2,7 @@
 // Renders an editable list of event cards; IF blocks nest recursively.
 
 import { el, clear } from './ui.js';
-import { makeEvent, EVENT_DEFS, sceneCols, sceneRows } from './model.js';
+import { makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS } from './model.js';
 
 const CMP_OPTIONS = ['==', '!=', '<', '>', '<=', '>='];
 
@@ -220,6 +220,108 @@ function renderEventCard(app, scene, list, index, rerender) {
     case 'DELETE_SAVE':
       fields.append(el('span', { class: 'hint' }, 'Erases the saved game.'));
       break;
+    case 'SET_LED': {
+      const modeSel = el('select', {
+        onchange: () => { ev.mode = modeSel.value; changed(); rerender(); },
+      });
+      for (const [v, l] of [['analog', 'Analog (PWM brightness)'], ['digital', 'Digital (on / off)']]) {
+        modeSel.append(el('option', { value: v, selected: ev.mode === v }, l));
+      }
+      fields.append(el('label', {}, 'Mode', modeSel));
+
+      if (ev.mode === 'digital') {
+        for (const [key, label] of [['dr', 'Red'], ['dg', 'Green'], ['db', 'Blue']]) {
+          fields.append(el('label', {}, el('input', {
+            type: 'checkbox', checked: ev[key],
+            onchange: (e) => { ev[key] = e.target.checked; changed(); rerender(); },
+          }), ' ', label));
+        }
+        fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+          'Releases the PWM hardware (freeRGBled) and switches channels fully on or off. '
+          + 'A later analog event takes the LED back.'));
+      } else {
+        for (const [key, label] of [['r', 'R'], ['g', 'G'], ['b', 'B']]) {
+          fields.append(el('label', {}, label, el('input', {
+            type: 'number', min: 0, max: 255, value: ev[key],
+            onchange: (e) => {
+              ev[key] = Math.max(0, Math.min(255, parseInt(e.target.value, 10) || 0));
+              changed();
+              rerender();
+            },
+          })));
+        }
+        fields.append(el('span', {
+          class: 'led-swatch',
+          title: `rgb(${ev.r}, ${ev.g}, ${ev.b})`,
+          style: `background: rgb(${ev.r}, ${ev.g}, ${ev.b})`,
+        }));
+        fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+          'One call sets all three channels, 0–255 each. Set 0,0,0 to turn the LED off.'));
+      }
+      break;
+    }
+    case 'MENU': {
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+
+      const layoutSel = el('select', {
+        onchange: () => { ev.layout = layoutSel.value; changed(); rerender(); },
+      });
+      for (const [v, l] of [['menu', 'Menu (right column)'], ['dialogue', 'Dialogue (full width, 2 columns)']]) {
+        layoutSel.append(el('option', { value: v, selected: ev.layout === v }, l));
+      }
+      fields.append(el('label', {}, 'Layout', layoutSel));
+
+      const countSel = el('select', {
+        onchange: () => {
+          const n = parseInt(countSel.value, 10);
+          while (ev.options.length < n) ev.options.push(`Option ${ev.options.length + 1}`);
+          ev.options.length = n;
+          changed();
+          rerender();
+        },
+      });
+      for (let n = 2; n <= MAX_MENU_OPTIONS; n++) {
+        countSel.append(el('option', { value: n, selected: ev.options.length === n }, String(n)));
+      }
+      fields.append(el('label', {}, 'Number of options', countSel));
+
+      ev.options.forEach((label, i) => {
+        const isLastZero = ev.lastIsZero && i === ev.options.length - 1;
+        fields.append(el('label', { style: 'flex-basis:100%' },
+          `Set to '${isLastZero ? 0 : i + 1}' if`,
+          el('input', {
+            type: 'text', value: label,
+            onchange: (e) => { ev.options[i] = e.target.value; changed(); rerender(); },
+          }),
+        ));
+      });
+
+      fields.append(el('label', { style: 'flex-basis:100%' }, el('input', {
+        type: 'checkbox', checked: ev.lastIsZero,
+        onchange: (e) => { ev.lastIsZero = e.target.checked; changed(); rerender(); },
+      }), " Last option sets to '0'"));
+      fields.append(el('label', { style: 'flex-basis:100%' }, el('input', {
+        type: 'checkbox', checked: ev.cancelB,
+        onchange: (e) => { ev.cancelB = e.target.checked; changed(); },
+      }), " Set to '0' if 'B' is pressed"));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Arrows move the cursor, A selects. Labels longer than 9 characters get clipped on screen.'));
+      break;
+    }
+    case 'CHOICE': {
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+      fields.append(el('label', { style: 'flex-basis:100%' }, "Set to 'True' if", el('input', {
+        type: 'text', value: ev.trueLabel,
+        onchange: (e) => { ev.trueLabel = e.target.value; changed(); },
+      })));
+      fields.append(el('label', { style: 'flex-basis:100%' }, "Set to 'False' if", el('input', {
+        type: 'text', value: ev.falseLabel,
+        onchange: (e) => { ev.falseLabel = e.target.value; changed(); },
+      })));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        "True sets the variable to 1, False to 0 — test it with an If Variable block."));
+      break;
+    }
     case 'END_SCRIPT':
       fields.append(el('span', { class: 'hint' }, 'Stops this script immediately.'));
       break;

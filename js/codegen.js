@@ -225,6 +225,15 @@ const char* textStr = nullptr;
 uint16_t textPageStart = 0;
 uint16_t textShown = 0;
 
+// Menu state (Display Menu / Display Multiple Choice). Labels point into PROGMEM.
+#define MAX_MENU_OPTIONS 8
+#define MENU_LAST_IS_ZERO 1
+#define MENU_CANCEL_B 2
+#define MENU_LAYOUT_DIALOGUE 4
+bool menuActive = false;
+uint8_t menuVar = 0, menuCount = 0, menuFlags = 0, menuSel = 0;
+const char* menuLabels[MAX_MENU_OPTIONS];
+
 uint8_t codeAt(uint16_t pc) { return pgm_read_byte(&scriptCode[pc]); }
 
 uint8_t tileAt(uint8_t x, uint8_t y) {
@@ -390,12 +399,87 @@ void updateText() {
   }
 }
 
+// Rows per column: the dialogue layout is two columns of 4, the menu layout is
+// a single column.
+uint8_t menuRows() {
+  if (menuFlags & MENU_LAYOUT_DIALOGUE) {
+    uint8_t r = (menuCount + 1) / 2;
+    return r > 4 ? 4 : r;
+  }
+  return menuCount;
+}
+
+// Value an option yields: 1-based, unless it is the last option and the script
+// asked for the last option to mean 0.
+uint8_t menuValue(uint8_t i) {
+  if ((menuFlags & MENU_LAST_IS_ZERO) && i == menuCount - 1) return 0;
+  return i + 1;
+}
+
+void closeMenu(uint8_t value) {
+  if (menuVar < NUM_VARS) vars[menuVar] = value;
+  menuActive = false;
+}
+
+void updateMenu() {
+  uint8_t rows = menuRows();
+  if (arduboy.justPressed(UP_BUTTON)) menuSel = (menuSel + menuCount - 1) % menuCount;
+  else if (arduboy.justPressed(DOWN_BUTTON)) menuSel = (menuSel + 1) % menuCount;
+  else if (menuFlags & MENU_LAYOUT_DIALOGUE) {
+    // Left/right hop between the two columns.
+    if (arduboy.justPressed(LEFT_BUTTON)) menuSel = (menuSel + menuCount - rows) % menuCount;
+    else if (arduboy.justPressed(RIGHT_BUTTON)) menuSel = (menuSel + rows) % menuCount;
+  }
+  if (arduboy.justPressed(A_BUTTON)) {
+    closeMenu(menuValue(menuSel));
+    return;
+  }
+  if ((menuFlags & MENU_CANCEL_B) && arduboy.justPressed(B_BUTTON)) {
+    closeMenu(0);
+  }
+}
+
+void drawMenuLabel(int16_t x, int16_t y, const char* label) {
+  for (uint8_t i = 0; i < 20; i++) {
+    char c = (char)pgm_read_byte(label + i);
+    if (c == '\\0') break;
+    arduboy.drawChar(x + i * 6, y, c, WHITE, BLACK, 1);
+  }
+}
+
+void drawMenu() {
+  uint8_t rows = menuRows();
+  if (menuFlags & MENU_LAYOUT_DIALOGUE) {
+    // Full-width box at the bottom, two columns of up to 4 rows.
+    arduboy.fillRect(0, 30, 128, 34, BLACK);
+    arduboy.drawRect(0, 30, 128, 34, WHITE);
+    for (uint8_t i = 0; i < menuCount; i++) {
+      int16_t x = 4 + (i / rows) * 62;
+      int16_t y = 32 + (i % rows) * 8;
+      if (i == menuSel) arduboy.drawChar(x, y, '>', WHITE, BLACK, 1);
+      drawMenuLabel(x + 6, y, menuLabels[i]);
+    }
+  } else {
+    // Single column down the right-hand side.
+    uint8_t h = menuCount * 8 + 2;
+    if (h > 64) h = 64;
+    arduboy.fillRect(64, 0, 64, h, BLACK);
+    arduboy.drawRect(64, 0, 64, h, WHITE);
+    for (uint8_t i = 0; i < menuCount; i++) {
+      int16_t y = 1 + i * 8;
+      if (i == menuSel) arduboy.drawChar(67, y, '>', WHITE, BLACK, 1);
+      drawMenuLabel(73, y, menuLabels[i]);
+    }
+  }
+}
+
 void runScript() {
   if (scriptWait > 0) { scriptWait--; return; }
   if (scriptWaitActor >= 0) {
     if (actors[scriptWaitActor].scriptMove) return; // still walking
     scriptWaitActor = -1;
   }
+  if (menuActive) { updateMenu(); return; }
   if (textStr != nullptr) { updateText(); return; }
   uint16_t guard = 0;
   while (scriptActive && guard++ < 4096) {
@@ -537,6 +621,34 @@ void runScript() {
       case 19: // DELETE_SAVE
         deleteSave();
         break;
+      case 20: { // SET_LED
+        uint8_t mode = codeAt(scriptPC++);
+        uint8_t r = codeAt(scriptPC++);
+        uint8_t g = codeAt(scriptPC++);
+        uint8_t b = codeAt(scriptPC++);
+        if (mode == 1) {
+          // Digital: hand the pins back from PWM first, then switch channels.
+          arduboy.freeRGBled();
+          arduboy.digitalWriteRGB(RED_LED, r ? RGB_ON : RGB_OFF);
+          arduboy.digitalWriteRGB(GREEN_LED, g ? RGB_ON : RGB_OFF);
+          arduboy.digitalWriteRGB(BLUE_LED, b ? RGB_ON : RGB_OFF);
+        } else {
+          arduboy.setRGBled(r, g, b);
+        }
+        break;
+      }
+      case 21: { // MENU
+        menuVar = codeAt(scriptPC++);
+        menuCount = codeAt(scriptPC++);
+        menuFlags = codeAt(scriptPC++);
+        if (menuCount > MAX_MENU_OPTIONS) menuCount = MAX_MENU_OPTIONS;
+        for (uint8_t i = 0; i < menuCount; i++) {
+          menuLabels[i] = (const char*)pgm_read_ptr(&strings[codeAt(scriptPC++)]);
+        }
+        menuSel = 0;
+        menuActive = true;
+        return; // block until the player chooses
+      }
       default:
         scriptActive = false; // corrupt bytecode — bail out
     }
@@ -713,6 +825,7 @@ void drawFrame() {
   const uint8_t* pspr = (const uint8_t*)pgm_read_ptr(&sprites[PLAYER_SPRITE]);
   Sprites::drawSelfMasked(player.px - camX, player.py - camY, pspr, player.frame);
   if (scriptActive && textStr != nullptr) drawTextbox();
+  if (menuActive) drawMenu();
 }
 
 void setup() {

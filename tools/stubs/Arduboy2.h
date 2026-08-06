@@ -25,6 +25,12 @@
 #define WIDTH 128
 #define HEIGHT 64
 
+#define RGB_ON 0
+#define RGB_OFF 1
+#define RED_LED 10
+#define GREEN_LED 11
+#define BLUE_LED 9
+
 long random(long howbig);
 long random(long howsmall, long howbig);
 
@@ -52,6 +58,11 @@ class Arduboy2 {
   bool justPressed(uint8_t button);
   bool justReleased(uint8_t button);
   void initRandomSeed();
+  static void setRGBled(uint8_t red, uint8_t green, uint8_t blue);
+  static void setRGBled(uint8_t color, uint8_t val);
+  static void freeRGBled();
+  static void digitalWriteRGB(uint8_t red, uint8_t green, uint8_t blue);
+  static void digitalWriteRGB(uint8_t color, uint8_t val);
   void clear();
   void display();
   void drawPixel(int16_t x, int16_t y, uint8_t color);

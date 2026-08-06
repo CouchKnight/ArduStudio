@@ -62,6 +62,42 @@ jump, hurt, victory, game over, and a looping overworld theme.</p>
       <b>Stop Song</b> to silence it. A <b>Play Tone</b> event interrupts any playing song.</li>
 </ul>
 
+<h2>Menus and choices</h2>
+<p>Two events in the <b>Dialogue</b> group ask the player a question and store the answer
+in a variable, so an <code>If Variable</code> block can branch on it.</p>
+<ul>
+  <li><b>Display Menu</b> — 2 to 8 options. The chosen option sets the variable to its
+      number: first option → <code>1</code>, second → <code>2</code>, and so on.
+      <ul>
+        <li><i>Last option sets to '0'</i> turns the final entry into a "cancel"/"leave" row.</li>
+        <li><i>Set to '0' if 'B' is pressed'</i> lets the player back out with B.</li>
+        <li><i>Layout</i>: <b>Menu</b> is a single column down the right-hand side of the
+            screen; <b>Dialogue</b> is a full-width box at the bottom with two columns.</li>
+      </ul></li>
+  <li><b>Display Multiple Choice</b> — a two-option prompt: the first option sets the
+      variable to <code>1</code> (true), the second to <code>0</code> (false).</li>
+</ul>
+<p>Arrows move the cursor (left/right hop columns in the dialogue layout) and A confirms.
+Labels are drawn as-is, so keep them to about <b>9 characters</b> — anything longer is
+clipped, and the exporter warns you about it.</p>
+<p class="hint">A title screen is just <b>Save Exists → Var</b> followed by a menu offering
+"Continue" and "New game".</p>
+
+<h2>The RGB LED</h2>
+<p><b>Set RGB LED</b> (in the <b>Hardware</b> group) drives the LED next to the screen —
+ideal feedback for a hit, a pickup or a menu confirmation.</p>
+<ul>
+  <li><b>Analog</b> is what most games want: one event sets all three channels to a
+      brightness from 0 to 255, e.g. <code>255, 0, 128</code> for hot pink. Use
+      <code>0, 0, 0</code> to switch it off.</li>
+  <li><b>Digital</b> is the cheaper on/off mode — it needs no PWM timer. ArduStudio
+      releases the PWM hardware (<code>freeRGBled()</code>) before writing the channels,
+      so you can mix the two modes freely; a later analog event simply takes the LED back.</li>
+</ul>
+<p class="hint">Flash it briefly rather than leaving it on: pair the event with a
+<b>Wait</b> and a second event that sets it back to <code>0, 0, 0</code>, as the demo's
+key pickup does. The Play tab shows a live LED dot beside the screen.</p>
+
 <h2>Save games (EEPROM)</h2>
 <p>Four events manage a save slot in the Arduboy's EEPROM, which survives power-off:</p>
 <ul>
@@ -114,7 +150,8 @@ save games use the AVR's built-in EEPROM.</p>
   <tr><td>Songs</td><td>32, up to 192 notes each</td></tr>
   <tr><td>Scene size</td><td>1×1 up to 4×4 screens (16×8 … 64×32 tiles)</td></tr>
   <tr><td>Set Tile changes</td><td>16 live tile changes per scene</td></tr>
-  <tr><td>Dialogue</td><td>256 unique strings</td></tr>
+  <tr><td>Dialogue</td><td>256 unique strings (shared with menu labels)</td></tr>
+  <tr><td>Menu options</td><td>8 per menu, ~9 characters per label</td></tr>
 </table>
 <p class="hint">The ATmega32u4 has ~28 KB of usable flash — roomy for dozens of scenes. The FX‑C's extra
 16 MB FX flash chip is not needed for ArduStudio games (that is where the 300-game library lives).</p>

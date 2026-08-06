@@ -30,7 +30,19 @@ export const OP = {
   LOAD_GAME: 17,
   SAVE_CHECK: 18,   // varIdx (set to 1 if a save exists, else 0)
   DELETE_SAVE: 19,
+  SET_LED: 20,      // mode (0 = analog PWM, 1 = digital on/off), r, g, b
+  MENU: 21,         // varIdx, count, flags, then count string indices
 };
+
+// MENU flag bits.
+export const MENU_LAST_IS_ZERO = 1;
+export const MENU_CANCEL_B = 2;
+export const MENU_LAYOUT_DIALOGUE = 4;
+
+export const MAX_MENU_OPTIONS = 8;
+// Widest label that renders without clipping: the menu column and each dialogue
+// column are ~60px wide, and the font is 6px per character including spacing.
+export const MENU_LABEL_MAX_CHARS = 9;
 
 export const CMP = { '==': 0, '!=': 1, '<': 2, '>': 3, '<=': 4, '>=': 5 };
 
@@ -78,15 +90,19 @@ export function compileProject(project) {
   const warnings = [];
   const strings = [];
   const stringIndex = new Map();
-  const internString = (raw) => {
-    const wrapped = wrapText(raw);
-    if (stringIndex.has(wrapped)) return stringIndex.get(wrapped);
+  // Store a string exactly as given, sharing the dialogue string table so
+  // labels and dialogue dedupe against each other.
+  const internRaw = (text) => {
+    const s = String(text);
+    if (stringIndex.has(s)) return stringIndex.get(s);
     const idx = strings.length;
     if (idx > 255) throw new Error('Too many unique dialogue strings (max 256)');
-    strings.push(wrapped);
-    stringIndex.set(wrapped, idx);
+    strings.push(s);
+    stringIndex.set(s, idx);
     return idx;
   };
+  // Dialogue goes through word wrapping first; menu labels must not.
+  const internString = (raw) => internRaw(wrapText(raw));
 
   const varIndex = new Map();
   project.variables.slice(0, MAX_VARIABLES).forEach((v, i) => varIndex.set(v.id, i));
@@ -202,6 +218,46 @@ export function compileProject(project) {
         case 'DELETE_SAVE':
           emit(OP.DELETE_SAVE);
           break;
+        case 'SET_LED':
+          if (ev.mode === 'digital') {
+            emit(OP.SET_LED, 1, ev.dr ? 1 : 0, ev.dg ? 1 : 0, ev.db ? 1 : 0);
+          } else {
+            emit(OP.SET_LED, 0, byte(ev.r), byte(ev.g), byte(ev.b));
+          }
+          break;
+        case 'MENU': {
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: Display Menu has no variable selected — skipped`); break; }
+          const opts = (ev.options || []).slice(0, MAX_MENU_OPTIONS);
+          if (opts.length < 2) { warnings.push(`${ctx}: Display Menu needs at least 2 options — skipped`); break; }
+          let flags = 0;
+          if (ev.lastIsZero) flags |= MENU_LAST_IS_ZERO;
+          if (ev.cancelB) flags |= MENU_CANCEL_B;
+          if (ev.layout === 'dialogue') flags |= MENU_LAYOUT_DIALOGUE;
+          emit(OP.MENU, idx, opts.length, flags);
+          for (const label of opts) {
+            if (String(label).length > MENU_LABEL_MAX_CHARS) {
+              warnings.push(`${ctx}: menu option "${label}" is wider than ${MENU_LABEL_MAX_CHARS} characters and will be clipped on screen`);
+            }
+            emit(internRaw(label));
+          }
+          break;
+        }
+        case 'CHOICE': {
+          // A two-option menu in the dialogue layout, where the last option
+          // yields 0 — exactly "first = true (1), second = false (0)".
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: Display Multiple Choice has no variable selected — skipped`); break; }
+          for (const label of [ev.trueLabel, ev.falseLabel]) {
+            if (String(label).length > MENU_LABEL_MAX_CHARS) {
+              warnings.push(`${ctx}: choice option "${label}" is wider than ${MENU_LABEL_MAX_CHARS} characters and will be clipped on screen`);
+            }
+          }
+          emit(OP.MENU, idx, 2, MENU_LAST_IS_ZERO | MENU_LAYOUT_DIALOGUE);
+          emit(internRaw(ev.trueLabel));
+          emit(internRaw(ev.falseLabel));
+          break;
+        }
         case 'END_SCRIPT':
           emit(OP.END);
           break;

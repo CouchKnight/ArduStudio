@@ -4,7 +4,10 @@
 // matches the device.
 
 import { SCENE_W, SCENE_H, TILE } from './model.js';
-import { OP, NO_SCRIPT } from './compiler.js';
+import {
+  OP, NO_SCRIPT,
+  MENU_LAST_IS_ZERO, MENU_CANCEL_B, MENU_LAYOUT_DIALOGUE,
+} from './compiler.js';
 import { FONT5X7 } from './font5x7.js';
 
 export const BTN = { LEFT: 1, RIGHT: 2, UP: 4, DOWN: 8, A: 16, B: 32 };
@@ -51,6 +54,9 @@ export class Emulator {
     this.vars = new Uint8Array(32);
     this.script = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1 };
     this.text = null; // { str, pageStart, shown }
+    this.menu = null; // { varIdx, count, labels, sel, flags }
+    // RGB LED, mirroring Arduboy2's setRGBled / digitalWriteRGB.
+    this.led = { mode: 'analog', r: 0, g: 0, b: 0 };
     this.armedTrigger = -1;
     this.frame = 0;
     this.song = { idx: -1, pos: 0, framesLeft: 0, loop: false };
@@ -346,6 +352,7 @@ export class Emulator {
       if (a && a.scriptMove) return; // still walking
       s.waitActor = -1;
     }
+    if (this.menu) { this.updateMenu(); return; }
     if (this.text) { this.updateText(); return; }
     const code = this.g.code;
     let guard = 0;
@@ -454,6 +461,24 @@ export class Emulator {
         case OP.DELETE_SAVE:
           this.storage.clear();
           break;
+        case OP.SET_LED: {
+          const mode = code[s.pc++];
+          const r = code[s.pc++], g = code[s.pc++], b = code[s.pc++];
+          // Digital mode stores 0/1 per channel; show it at full brightness.
+          this.led = mode === 1
+            ? { mode: 'digital', r: r ? 255 : 0, g: g ? 255 : 0, b: b ? 255 : 0 }
+            : { mode: 'analog', r, g, b };
+          break;
+        }
+        case OP.MENU: {
+          const varIdx = code[s.pc++];
+          const count = code[s.pc++];
+          const flags = code[s.pc++];
+          const labels = [];
+          for (let i = 0; i < count; i++) labels.push(this.g.strings[code[s.pc++]]);
+          this.menu = { varIdx, count, labels, sel: 0, flags };
+          return; // block until the player chooses
+        }
         default:
           s.active = false; // corrupt bytecode — bail out
       }
@@ -481,6 +506,70 @@ export class Emulator {
   pageEnd(t) {
     const i = t.str.indexOf('\f', t.pageStart);
     return i < 0 ? t.str.length : i;
+  }
+
+  // ------------------------------------------------------------------- menu
+
+  // Rows per column: the dialogue layout is two columns of 4, the menu layout
+  // is a single column.
+  menuRows(m) {
+    return (m.flags & MENU_LAYOUT_DIALOGUE) ? Math.min(4, Math.ceil(m.count / 2)) : m.count;
+  }
+
+  // Value a given option yields: 1-based, unless it is the last option and the
+  // script asked for the last option to mean 0.
+  menuValue(m, i) {
+    return ((m.flags & MENU_LAST_IS_ZERO) && i === m.count - 1) ? 0 : i + 1;
+  }
+
+  closeMenu(value) {
+    this.vars[this.menu.varIdx] = value;
+    this.menu = null;
+  }
+
+  updateMenu() {
+    const m = this.menu;
+    const rows = this.menuRows(m);
+    if (this.justPressed(BTN.UP)) m.sel = (m.sel + m.count - 1) % m.count;
+    else if (this.justPressed(BTN.DOWN)) m.sel = (m.sel + 1) % m.count;
+    else if (m.flags & MENU_LAYOUT_DIALOGUE) {
+      // Left/right hop between the two columns.
+      if (this.justPressed(BTN.LEFT)) m.sel = (m.sel + m.count - rows) % m.count;
+      else if (this.justPressed(BTN.RIGHT)) m.sel = (m.sel + rows) % m.count;
+    }
+    if (this.justPressed(BTN.A)) {
+      this.closeMenu(this.menuValue(m, m.sel));
+      return;
+    }
+    if ((m.flags & MENU_CANCEL_B) && this.justPressed(BTN.B)) {
+      this.closeMenu(0);
+    }
+  }
+
+  drawMenu() {
+    const m = this.menu;
+    const rows = this.menuRows(m);
+    if (m.flags & MENU_LAYOUT_DIALOGUE) {
+      // Full-width box at the bottom, two columns of up to 4 rows.
+      this.fillRect(0, 30, W, 34, 0);
+      this.drawRectOutline(0, 30, W, 34, 1);
+      for (let i = 0; i < m.count; i++) {
+        const col = Math.floor(i / rows), row = i % rows;
+        const x = 4 + col * 62, y = 32 + row * 8;
+        if (i === m.sel) this.drawText(x, y, '>');
+        this.drawText(x + 6, y, m.labels[i]);
+      }
+    } else {
+      // Single column down the right-hand side.
+      const h = Math.min(H, m.count * 8 + 2);
+      this.fillRect(64, 0, 64, h, 0);
+      this.drawRectOutline(64, 0, 64, h, 1);
+      for (let i = 0; i < m.count; i++) {
+        const y = 1 + i * 8;
+        if (i === m.sel) this.drawText(67, y, '>');
+        this.drawText(73, y, m.labels[i]);
+      }
+    }
   }
 
   // ------------------------------------------------------------------- draw
@@ -565,6 +654,7 @@ export class Emulator {
       this.drawBytesMasked(Math.round(this.player.px) - this.camX, Math.round(this.player.py) - this.camY, f, pspr.width, pspr.height);
     }
     if (this.text) this.drawTextbox();
+    if (this.menu) this.drawMenu();
   }
 
   drawTextbox() {

@@ -72,6 +72,8 @@ export function initPlayTab(app) {
       compiled = compileProject(app.project);
       emu = new Emulator(compiled, { onTone: tone, storage: eepromStorage() });
       warnBox.textContent = compiled.warnings.join('\n');
+      // Debug hook: inspect the running game from the console (or tests).
+      window.__ardustudio_emu = emu;
     } catch (err) {
       compiled = null;
       emu = null;
@@ -95,6 +97,24 @@ export function initPlayTab(app) {
     });
   }
 
+  const ledDot = document.getElementById('ledDot');
+  const ledLabel = document.getElementById('ledLabel');
+  let lastLed = '';
+
+  function updateLed() {
+    if (!emu) return;
+    const { mode, r, g, b } = emu.led;
+    const key = `${mode}:${r},${g},${b}`;
+    if (key === lastLed) return;
+    lastLed = key;
+    ledDot.style.background = `rgb(${r}, ${g}, ${b})`;
+    // Glow so a lit LED reads at a glance against the dark shell.
+    ledDot.style.boxShadow = (r || g || b) ? `0 0 10px rgb(${r}, ${g}, ${b})` : 'none';
+    ledLabel.textContent = (r || g || b)
+      ? `LED ${mode === 'digital' ? 'digital' : `${r},${g},${b}`}`
+      : 'LED off';
+  }
+
   function frame(ts) {
     raf = requestAnimationFrame(frame);
     if (!emu || paused) return;
@@ -112,6 +132,7 @@ export function initPlayTab(app) {
     if (stepped) {
       emu.blit(ctx, 4);
       updateVars();
+      updateLed();
     }
   }
 
