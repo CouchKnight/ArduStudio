@@ -31,9 +31,19 @@ long random(long howsmall, long howbig);
 template <typename T> T min(T a, T b) { return a < b ? a : b; }
 template <typename T> T max(T a, T b) { return a > b ? a : b; }
 
+class Arduboy2Audio {
+ public:
+  static bool enabled();
+  static void on();
+  static void off();
+  static void toggle();
+  static void saveOnOff();
+};
+
 class Arduboy2 {
  public:
   uint16_t frameCount;
+  Arduboy2Audio audio;
   void begin();
   void setFrameRate(uint8_t rate);
   bool nextFrame();

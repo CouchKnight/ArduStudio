@@ -5,6 +5,7 @@
 
 import {
   SCENE_W, SCENE_H, MAX_VARIABLES,
+  sceneCols, sceneRows,
   pixelsToBytes, sceneById, spriteById,
 } from './model.js';
 
@@ -22,6 +23,13 @@ export const OP = {
   ACTOR_SHOW: 10,   // actorIdx (0xFF = self)
   SET_TILE: 11,     // x, y, tileIndex
   PLAYER_POS: 12,   // x, y
+  ACTOR_MOVE: 13,   // actorIdx (0xFF = self), x, y, flags (bit0 = instant)
+  PLAY_SONG: 14,    // songIdx, flags (bit0 = loop)
+  STOP_SONG: 15,
+  SAVE_GAME: 16,
+  LOAD_GAME: 17,
+  SAVE_CHECK: 18,   // varIdx (set to 1 if a save exists, else 0)
+  DELETE_SAVE: 19,
 };
 
 export const CMP = { '==': 0, '!=': 1, '<': 2, '>': 3, '<=': 4, '>=': 5 };
@@ -87,6 +95,12 @@ export function compileProject(project) {
   project.scenes.forEach((s, i) => sceneIndex.set(s.id, i));
   if (project.scenes.length > 255) throw new Error('Too many scenes (max 255)');
 
+  const songIndex = new Map();
+  (project.songs || []).forEach((s, i) => songIndex.set(s.id, i));
+
+  const cols = (scene) => (scene ? sceneCols(scene) : SCENE_W);
+  const rows = (scene) => (scene ? sceneRows(scene) : SCENE_H);
+
   const code = [];
   const emit = (...bytes) => { for (const b of bytes) code.push(b & 0xff); };
   const emitU16 = (v) => { code.push(v & 0xff, (v >> 8) & 0xff); };
@@ -101,7 +115,8 @@ export function compileProject(project) {
         case 'SWITCH_SCENE': {
           const idx = sceneIndex.get(ev.sceneId);
           if (idx === undefined) { warnings.push(`${ctx}: Change Scene points at a missing scene — skipped`); break; }
-          emit(OP.SWITCH_SCENE, idx, clampTile(ev.x, SCENE_W), clampTile(ev.y, SCENE_H));
+          const target = project.scenes[idx];
+          emit(OP.SWITCH_SCENE, idx, clampTile(ev.x, sceneCols(target)), clampTile(ev.y, sceneRows(target)));
           break;
         }
         case 'SET_VAR': {
@@ -147,11 +162,45 @@ export function compileProject(project) {
           break;
         }
         case 'SET_TILE':
-          emit(OP.SET_TILE, clampTile(ev.x, SCENE_W), clampTile(ev.y, SCENE_H),
+          emit(OP.SET_TILE, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)),
             Math.max(0, Math.min(project.tiles.length - 1, ev.tileIndex | 0)));
           break;
         case 'PLAYER_POS':
-          emit(OP.PLAYER_POS, clampTile(ev.x, SCENE_W), clampTile(ev.y, SCENE_H));
+          emit(OP.PLAYER_POS, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)));
+          break;
+        case 'ACTOR_MOVE': {
+          let idx = 0xff;
+          if (ev.target !== 'self') {
+            idx = scene ? scene.actors.findIndex((a) => a.id === ev.target) : -1;
+            if (idx < 0) { warnings.push(`${ctx}: Move Actor target not in this scene — skipped`); break; }
+          }
+          emit(OP.ACTOR_MOVE, idx, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)),
+            ev.instant ? 1 : 0);
+          break;
+        }
+        case 'PLAY_SONG': {
+          const idx = songIndex.get(ev.songId);
+          if (idx === undefined) { warnings.push(`${ctx}: Play Song has no song selected — skipped`); break; }
+          emit(OP.PLAY_SONG, idx, ev.loop ? 1 : 0);
+          break;
+        }
+        case 'STOP_SONG':
+          emit(OP.STOP_SONG);
+          break;
+        case 'SAVE_GAME':
+          emit(OP.SAVE_GAME);
+          break;
+        case 'LOAD_GAME':
+          emit(OP.LOAD_GAME);
+          break;
+        case 'SAVE_CHECK': {
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: Save Exists has no variable selected — skipped`); break; }
+          emit(OP.SAVE_CHECK, idx);
+          break;
+        }
+        case 'DELETE_SAVE':
+          emit(OP.DELETE_SAVE);
           break;
         case 'END_SCRIPT':
           emit(OP.END);
@@ -174,6 +223,7 @@ export function compileProject(project) {
   }
 
   const scenes = project.scenes.map((scene, si) => {
+    const cw = sceneCols(scene), ch = sceneRows(scene);
     const onEnterIdx = addScript(scene.onEnter, scene, `Scene "${scene.name}" on-enter`);
     const actors = scene.actors.map((a) => {
       const sprite = spriteById(project, a.spriteId);
@@ -181,8 +231,8 @@ export function compileProject(project) {
       if (spriteIdx < 0) { warnings.push(`Actor "${a.name}" in "${scene.name}" has no sprite — using sprite 0`); spriteIdx = 0; }
       return {
         spriteIdx,
-        x: clampTile(a.x, SCENE_W),
-        y: clampTile(a.y, SCENE_H),
+        x: clampTile(a.x, cw),
+        y: clampTile(a.y, ch),
         movement: MOVEMENT_CODES[a.movement] ?? 0,
         solid: a.solid ? 1 : 0,
         animate: a.animate ? 1 : 0,
@@ -190,13 +240,13 @@ export function compileProject(project) {
       };
     });
     const triggers = scene.triggers.map((t) => ({
-      x: clampTile(t.x, SCENE_W),
-      y: clampTile(t.y, SCENE_H),
-      w: Math.max(1, Math.min(SCENE_W, t.w | 0)),
-      h: Math.max(1, Math.min(SCENE_H, t.h | 0)),
+      x: clampTile(t.x, cw),
+      y: clampTile(t.y, ch),
+      w: Math.max(1, Math.min(cw, t.w | 0)),
+      h: Math.max(1, Math.min(ch, t.h | 0)),
       scriptIdx: addScript(t.script, scene, `Trigger "${t.name}" in "${scene.name}"`),
     }));
-    return { name: scene.name, index: si, tiles: scene.tiles.slice(), actors, triggers, onEnterIdx };
+    return { name: scene.name, index: si, cols: cw, rows: ch, tiles: scene.tiles.slice(), actors, triggers, onEnterIdx };
   });
 
   if (code.length > 0xfffe) throw new Error('Compiled scripts exceed 64KB');
@@ -214,7 +264,13 @@ export function compileProject(project) {
     frames: s.frames.map((f) => pixelsToBytes(f, s.width, s.height)),
   }));
 
+  const songs = (project.songs || []).map((s) => ({
+    name: s.name,
+    notes: s.notes.map((n) => ({ f: n.f, d: n.d })),
+  }));
+
   const startScene = sceneIndex.get(project.settings.startSceneId) ?? 0;
+  const startSceneObj = project.scenes[startScene];
   const playerSpriteIdx = Math.max(0, project.sprites.indexOf(spriteById(project, project.settings.playerSpriteId)));
 
   return {
@@ -226,11 +282,12 @@ export function compileProject(project) {
     scenes,
     tiles,
     sprites,
+    songs,
     varNames: project.variables.map((v) => v.name),
     varCount: Math.min(project.variables.length, MAX_VARIABLES),
     startScene,
-    startX: clampTile(project.settings.startX, SCENE_W),
-    startY: clampTile(project.settings.startY, SCENE_H),
+    startX: clampTile(project.settings.startX, cols(startSceneObj)),
+    startY: clampTile(project.settings.startY, rows(startSceneObj)),
     playerSpriteIdx,
     warnings,
   };

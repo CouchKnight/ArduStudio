@@ -2,7 +2,7 @@
 // Renders an editable list of event cards; IF blocks nest recursively.
 
 import { el, clear } from './ui.js';
-import { makeEvent, EVENT_DEFS } from './model.js';
+import { makeEvent, EVENT_DEFS, sceneCols, sceneRows } from './model.js';
 
 const CMP_OPTIONS = ['==', '!=', '<', '>', '<=', '>='];
 
@@ -111,9 +111,10 @@ function renderEventCard(app, scene, list, index, rerender) {
       for (const s of project.scenes) {
         sel.append(el('option', { value: s.id, selected: ev.sceneId === s.id }, s.name));
       }
+      const target = project.scenes.find((s) => s.id === ev.sceneId);
       fields.append(el('label', {}, 'Scene', sel));
-      fields.append(el('label', {}, 'X', numInput('x', 0, 15)));
-      fields.append(el('label', {}, 'Y', numInput('y', 0, 7)));
+      fields.append(el('label', {}, 'X', numInput('x', 0, target ? sceneCols(target) - 1 : 63)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, target ? sceneRows(target) - 1 : 31)));
       break;
     }
     case 'SET_VAR':
@@ -157,9 +158,27 @@ function renderEventCard(app, scene, list, index, rerender) {
       fields.append(el('label', {}, 'Actor', sel));
       break;
     }
+    case 'ACTOR_MOVE': {
+      const sel = el('select', { onchange: () => { ev.target = sel.value; changed(); } });
+      sel.append(el('option', { value: 'self', selected: ev.target === 'self' }, 'Self (this actor)'));
+      if (scene) {
+        for (const a of scene.actors) {
+          sel.append(el('option', { value: a.id, selected: ev.target === a.id }, a.name));
+        }
+      }
+      fields.append(el('label', {}, 'Actor', sel));
+      fields.append(el('label', {}, 'To X', numInput('x', 0, scene ? sceneCols(scene) - 1 : 63)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, scene ? sceneRows(scene) - 1 : 31)));
+      fields.append(el('label', {}, el('input', {
+        type: 'checkbox', checked: ev.instant,
+        onchange: (e) => { ev.instant = e.target.checked; changed(); },
+      }), ' Teleport (instant)'));
+      fields.append(el('span', { class: 'hint' }, 'Walking moves ignore walls; the script waits for arrival.'));
+      break;
+    }
     case 'SET_TILE': {
-      fields.append(el('label', {}, 'X', numInput('x', 0, 15)));
-      fields.append(el('label', {}, 'Y', numInput('y', 0, 7)));
+      fields.append(el('label', {}, 'X', numInput('x', 0, scene ? sceneCols(scene) - 1 : 63)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, scene ? sceneRows(scene) - 1 : 31)));
       const sel = el('select', { onchange: () => { ev.tileIndex = parseInt(sel.value, 10); changed(); } });
       project.tiles.forEach((t, i) => {
         sel.append(el('option', { value: i, selected: ev.tileIndex === i }, `${i}: ${t.name}`));
@@ -168,8 +187,38 @@ function renderEventCard(app, scene, list, index, rerender) {
       break;
     }
     case 'PLAYER_POS':
-      fields.append(el('label', {}, 'X', numInput('x', 0, 15)));
-      fields.append(el('label', {}, 'Y', numInput('y', 0, 7)));
+      fields.append(el('label', {}, 'X', numInput('x', 0, scene ? sceneCols(scene) - 1 : 63)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, scene ? sceneRows(scene) - 1 : 31)));
+      break;
+    case 'PLAY_SONG': {
+      const sel = el('select', { onchange: () => { ev.songId = sel.value; changed(); } });
+      sel.append(el('option', { value: '' }, '(pick song)'));
+      for (const s of project.songs || []) {
+        sel.append(el('option', { value: s.id, selected: ev.songId === s.id }, s.name));
+      }
+      fields.append(el('label', {}, 'Song', sel));
+      fields.append(el('label', {}, el('input', {
+        type: 'checkbox', checked: ev.loop,
+        onchange: (e) => { ev.loop = e.target.checked; changed(); },
+      }), ' Loop'));
+      fields.append(el('span', { class: 'hint' }, 'Compose songs in the Audio tab.'));
+      break;
+    }
+    case 'STOP_SONG':
+      fields.append(el('span', { class: 'hint' }, 'Silences the current song.'));
+      break;
+    case 'SAVE_GAME':
+      fields.append(el('span', { class: 'hint' }, 'Writes variables, scene and player position to EEPROM.'));
+      break;
+    case 'LOAD_GAME':
+      fields.append(el('span', { class: 'hint' }, 'Restores the save if one exists, otherwise continues.'));
+      break;
+    case 'SAVE_CHECK':
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+      fields.append(el('span', { class: 'hint' }, 'Sets the variable to 1 if a save exists, else 0.'));
+      break;
+    case 'DELETE_SAVE':
+      fields.append(el('span', { class: 'hint' }, 'Erases the saved game.'));
       break;
     case 'END_SCRIPT':
       fields.append(el('span', { class: 'hint' }, 'Stops this script immediately.'));

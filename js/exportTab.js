@@ -2,7 +2,7 @@
 // project file save/load.
 
 import { el, clear, download } from './ui.js';
-import { uid, MAX_VARIABLES, makeProject, makeDemoProject, normalizeProject } from './model.js';
+import { makeProject, makeDemoProject, normalizeProject } from './model.js';
 import { generateIno } from './codegen.js';
 
 export function initExportTab(app) {
@@ -26,8 +26,9 @@ export function initExportTab(app) {
         compiled.strings.reduce((n, s) => n + s.length + 1, 0) +
         compiled.tiles.length * 8 +
         compiled.sprites.reduce((n, s) => n + 2 + s.frames.length * s.frames[0].length, 0) +
-        compiled.scenes.length * (128 + 16);
-      statsSpan.textContent = `~${(dataBytes / 1024).toFixed(1)} KB game data · ${compiled.scenes.length} scenes · ${compiled.strings.length} strings · fits ATmega32u4 easily`;
+        compiled.scenes.reduce((n, sc) => n + sc.tiles.length + 16, 0) +
+        compiled.songs.reduce((n, sg) => n + sg.notes.length * 4 + 2, 0);
+      statsSpan.textContent = `~${(dataBytes / 1024).toFixed(1)} KB game data · ${compiled.scenes.length} scenes · ${compiled.strings.length} strings · ${compiled.songs.length} songs`;
       warnBox.textContent = warnings.join('\n');
       return ino;
     } catch (err) {
@@ -80,40 +81,6 @@ export function initExportTab(app) {
     app.setProject(makeDemoProject());
   });
 
-  function renderVarEditor() {
-    const box = clear(document.getElementById('varEditor'));
-    const table = el('div', {});
-    app.project.variables.forEach((v, i) => {
-      table.append(el('div', { class: 'form-row' },
-        el('span', { class: 'hint', style: 'width:24px' }, `#${i}`),
-        el('input', {
-          type: 'text', value: v.name,
-          onchange: (e) => { v.name = e.target.value.replace(/[^A-Za-z0-9_]+/g, '_') || `var_${i}`; app.save(); renderVarEditor(); },
-        }),
-        el('button', {
-          class: 'mini', title: 'Delete variable',
-          onclick: () => {
-            if (!confirm(`Delete variable "${v.name}"? Events using it will be skipped at export.`)) return;
-            app.project.variables.splice(i, 1);
-            app.save();
-            renderVarEditor();
-          },
-        }, '✕'),
-      ));
-    });
-    if (app.project.variables.length < MAX_VARIABLES) {
-      table.append(el('button', {
-        class: 'btn',
-        onclick: () => {
-          app.project.variables.push({ id: uid('var'), name: `var_${app.project.variables.length}` });
-          app.save();
-          renderVarEditor();
-        },
-      }, '＋ Add variable'));
-    }
-    box.append(table);
-  }
-
   function renderPlayerSprite() {
     const sel = clear(document.getElementById('expPlayerSprite'));
     for (const s of app.project.sprites) {
@@ -125,7 +92,6 @@ export function initExportTab(app) {
   function refresh() {
     nameInput.value = app.project.name || '';
     authorInput.value = app.project.author || '';
-    renderVarEditor();
     renderPlayerSprite();
     tryGenerate();
   }

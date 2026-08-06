@@ -12,10 +12,14 @@ script them with visual event blocks, play-test instantly in the browser, then e
 <ol>
   <li><b>Tiles</b> — draw 8×8 background tiles. Mark walls, water etc. as <i>Solid</i>.</li>
   <li><b>Sprites</b> — draw animated characters (up to 4 frames, 8×8 to 16×16).</li>
-  <li><b>Scenes</b> — each scene is one Arduboy screen (16×8 tiles). Paint the map,
-      place <b>actors</b> (☺) and drag <b>trigger</b> areas (▦). Set the player start with ⚑.</li>
+  <li><b>Audio</b> — compose songs and sound effects as ArduboyTones sequences; start from a
+      preset, preview in the browser, import/export them as files.</li>
+  <li><b>Scenes</b> — a scene is one Arduboy screen (16×8 tiles) by default, or up to 4×4 screens
+      that <b>scroll</b> to follow the player. Paint the map, place <b>actors</b> (☺) and drag
+      <b>trigger</b> areas (▦). Set the player start with ⚑.</li>
   <li><b>Script</b> — select an actor/trigger/scene and add event blocks in the right panel:
-      dialogue, variables, if/else branching, scene changes, tones, tile swaps…</li>
+      dialogue, variables, if/else branching, scene changes, moving actors, music, save games,
+      tones, tile swaps…</li>
   <li><b>▶ Play</b> — instant play-test. The emulator runs the <i>same bytecode</i> your exported
       game uses, with the genuine Arduboy2 font.</li>
   <li><b>Export</b> — download the <code>.ino</code> sketch and flash it from the Arduino IDE.</li>
@@ -33,6 +37,48 @@ Press <b>A</b> while facing an actor to run its script. Walking onto a trigger a
 (it re-arms after you step off it). A scene's <i>On enter</i> script runs every time the scene loads —
 use an <code>If Variable</code> block for one-time intros.</p>
 
+<h2>Undo / redo</h2>
+<p>Every edit is undoable: <kbd>Ctrl</kbd>+<kbd>Z</kbd> to undo,
+<kbd>Ctrl</kbd>+<kbd>Y</kbd> (or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>) to redo, or use the
+↶ ↷ buttons in the top bar. One paint stroke counts as one step. History holds the last 100 edits.</p>
+
+<h2>Scrolling scenes</h2>
+<p>Set <i>Screens</i> in the scene inspector to make a scene span up to 4×4 Arduboy screens
+(64×32 tiles). The camera then follows the player and clamps at the map edges — a 1×1 scene never
+scrolls, so single-screen Bitsy-style rooms behave exactly as before. Green lines in the editor mark
+where one screen ends and the next begins.</p>
+
+<h2>Music and sound effects</h2>
+<p>The <b>Audio</b> tab writes <a href="https://github.com/MLXXXp/ArduboyTones" target="_blank" rel="noreferrer">ArduboyTones</a>
+scores: a list of notes, each a frequency (or a rest) plus a duration in milliseconds. Pick notes by
+name (C4, A#5…) or enter a raw frequency. Presets cover common retro jingles and SFX — pickup,
+jump, hurt, victory, game over, and a looping overworld theme.</p>
+<ul>
+  <li><b>Preview</b> plays the song through your browser's speakers with a square wave, close to how
+      the Arduboy's piezo sounds.</li>
+  <li><b>Export/import</b> songs as <code>.song.json</code> files to reuse across projects, or copy
+      the generated <b>ArduboyTones C array</b> to paste straight into a hand-written sketch.</li>
+  <li>Use a <b>Play Song</b> event to start one (tick <i>Loop</i> for background music) and
+      <b>Stop Song</b> to silence it. A <b>Play Tone</b> event interrupts any playing song.</li>
+</ul>
+
+<h2>Save games (EEPROM)</h2>
+<p>Four events manage a save slot in the Arduboy's EEPROM, which survives power-off:</p>
+<ul>
+  <li><b>Save Game</b> — stores every variable plus the current scene and player position.</li>
+  <li><b>Load Game</b> — restores them if a save exists; otherwise the script simply continues.</li>
+  <li><b>Save Exists → Var</b> — sets a variable to 1 or 0, so a title screen can offer "Continue".</li>
+  <li><b>Delete Save</b> — erases the slot.</li>
+</ul>
+<p class="hint">In the browser the save lives in localStorage and persists between play sessions —
+use <b>🗑 Wipe save</b> on the Play tab to test a fresh start. Note that scene changes made with
+<b>Set Tile</b> are <i>not</i> saved; drive anything that must persist from a variable.</p>
+
+<h2>Variables</h2>
+<p>The <b>Variables</b> tab is the single place to manage all 32 byte variables. Each row shows every
+script that reads or writes it, so you can tell at a glance what a variable does — and what deleting
+it would break.</p>
+
 <h2>Scripting tips</h2>
 <ul>
   <li>Variables are bytes (0–255). Use them as flags (0/1), counters, or states.</li>
@@ -41,20 +87,22 @@ use an <code>If Variable</code> block for one-time intros.</p>
   <li><b>Set Tile</b> is great for opening doors and revealing passages — combine with the solid flag of tiles.</li>
   <li>Dialogue wraps automatically (~20 chars/line, 3 lines/page). Use <code>\\f</code> in the text for a manual page break.</li>
   <li><b>Change Scene</b> both switches the map and places the player — build doorways with a 1-tile trigger.</li>
+  <li><b>Move Actor</b> walks an actor to a tile and pauses the script until it arrives (handy for
+      cutscenes). Walking moves ignore walls; tick <i>Teleport</i> to jump there instantly.</li>
 </ul>
 
 <h2>Flashing to the Arduboy FX‑C</h2>
 <ol>
   <li>Install the <a href="https://www.arduino.cc/en/software" target="_blank" rel="noreferrer">Arduino IDE</a>.</li>
-  <li>In <i>Library Manager</i>, install <b>Arduboy2</b> (by the Arduboy2 contributors).</li>
+  <li>In <i>Library Manager</i>, install <b>Arduboy2</b> and <b>ArduboyTones</b>.</li>
   <li>Open your exported <code>.ino</code>, select board <b>Arduino Leonardo</b>
       (or the <b>Arduboy</b> board if you added the Arduboy boards package), pick the USB port, press Upload.</li>
   <li>On the FX‑C, your game uploads over USB‑C. To return to the built-in game library,
       use the FX loader as usual — your uploaded game lives in the ATmega32u4's own flash.</li>
 </ol>
 <p class="hint">See the <a href="https://www.arduboy.com/quick-start" target="_blank" rel="noreferrer">Arduboy quick-start</a>
-for driver/port help. The generated sketch only needs the Arduboy2 library — sound uses the built-in beeper
-(<code>BeepPin1</code>), no extra libraries.</p>
+for driver/port help. The generated sketch needs only <b>Arduboy2</b> and <b>ArduboyTones</b>;
+save games use the AVR's built-in EEPROM.</p>
 
 <h2>Limits (per project)</h2>
 <table>
@@ -62,7 +110,10 @@ for driver/port help. The generated sketch only needs the Arduboy2 library — s
   <tr><td>Tiles</td><td>64 (8×8, solid flag)</td></tr>
   <tr><td>Sprites</td><td>32, up to 4 frames, 8×8 / 16×8 / 8×16 / 16×16</td></tr>
   <tr><td>Actors / triggers</td><td>8 + 8 per scene</td></tr>
-  <tr><td>Variables</td><td>32 bytes</td></tr>
+  <tr><td>Variables</td><td>32 bytes (all saved to EEPROM)</td></tr>
+  <tr><td>Songs</td><td>32, up to 192 notes each</td></tr>
+  <tr><td>Scene size</td><td>1×1 up to 4×4 screens (16×8 … 64×32 tiles)</td></tr>
+  <tr><td>Set Tile changes</td><td>16 live tile changes per scene</td></tr>
   <tr><td>Dialogue</td><td>256 unique strings</td></tr>
 </table>
 <p class="hint">The ATmega32u4 has ~28 KB of usable flash — roomy for dozens of scenes. The FX‑C's extra
@@ -75,6 +126,9 @@ for driver/port help. The generated sketch only needs the Arduboy2 library — s
   <li><a href="https://community.arduboy.com/t/all-the-arduboy-image-converters/3568" target="_blank" rel="noreferrer">Image converters thread</a> — alternatives to the built-in Image Tool</li>
   <li>Other ecosystem libraries you may meet: <b>ArduboyTones</b> / <b>ArduboyPlaytune</b> (music),
       <b>ArduboyFX</b> (the 16 MB flash chip), <b>FixedPoints</b> (fixed-point math), <b>ATMlib</b> (chip tunes).</li>
+  <li><a href="https://cloud.arduboy.com" target="_blank" rel="noreferrer">Arduboy Cloud</a> — browser IDE
+      with its own music and sound-effect creators; ArduStudio's Audio tab exports the same
+      ArduboyTones format, so scores move between the two.</li>
 </ul>
 `;
   return { refresh: () => {} };

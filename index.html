@@ -17,12 +17,16 @@
     <button data-tab="scenes" class="tab active">Scenes</button>
     <button data-tab="tiles" class="tab">Tiles</button>
     <button data-tab="sprites" class="tab">Sprites</button>
+    <button data-tab="audio" class="tab">Audio</button>
+    <button data-tab="variables" class="tab">Variables</button>
     <button data-tab="image" class="tab">Image Tool</button>
     <button data-tab="play" class="tab">▶ Play</button>
     <button data-tab="export" class="tab">Export</button>
     <button data-tab="help" class="tab">Help</button>
   </nav>
   <div class="topbar-right">
+    <button id="undoBtn" class="mini" title="Undo (Ctrl+Z)">↶</button>
+    <button id="redoBtn" class="mini" title="Redo (Ctrl+Y)">↷</button>
     <span id="projectName" class="project-name"></span>
     <span id="saveStatus" class="save-status"></span>
   </div>
@@ -91,6 +95,41 @@
     </div>
   </section>
 
+  <!-- ======================= AUDIO ======================= -->
+  <section id="tab-audio" class="tabpane">
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">Songs
+          <button id="addSong" class="mini" title="Add song">＋</button>
+        </div>
+        <ul id="songList" class="item-list"></ul>
+      </div>
+      <div class="panel">
+        <div class="panel-title">New from preset</div>
+        <div id="songPresets"></div>
+        <p class="hint">Retro SFX &amp; jingles in the spirit of the
+          <a href="https://cloud.arduboy.com" target="_blank" rel="noreferrer">Arduboy Cloud</a> sound tools.</p>
+      </div>
+    </aside>
+    <div class="editor-center wide">
+      <div id="songEditor"></div>
+    </div>
+  </section>
+
+  <!-- ======================= VARIABLES ======================= -->
+  <section id="tab-variables" class="tabpane">
+    <div class="editor-center wide">
+      <div class="panel">
+        <div class="panel-title">Variables
+          <button id="addVariable" class="mini" title="Add variable">＋</button>
+        </div>
+        <p class="hint">Byte variables (0–255) drive all game logic — flags, counters, states.
+          Up to 32. The usage column shows every script that references a variable.</p>
+        <table id="varTable" class="var-table"></table>
+      </div>
+    </div>
+  </section>
+
   <!-- ======================= IMAGE TOOL ======================= -->
   <section id="tab-image" class="tabpane">
     <div class="editor-center wide">
@@ -130,6 +169,7 @@
           <button id="playStart" class="btn primary">▶ Restart</button>
           <button id="playPause" class="btn">⏸ Pause</button>
           <label><input type="checkbox" id="playSound" checked> Sound</label>
+          <button id="playWipe" class="btn" title="Erase the emulated EEPROM save">🗑 Wipe save</button>
         </div>
         <div id="playWarnings" class="warnings"></div>
         <div class="panel">
@@ -149,8 +189,6 @@
           <label>Name <input type="text" id="expName"></label>
           <label>Author <input type="text" id="expAuthor"></label>
         </div>
-        <div class="panel-title">Variables</div>
-        <div id="varEditor"></div>
         <div class="panel-title">Player</div>
         <div class="form-row">
           <label>Player sprite <select id="expPlayerSprite"></select></label>
@@ -161,8 +199,8 @@
         <div class="panel-title">Arduboy sketch (.ino)</div>
         <p class="hint">
           Generates a complete Arduino sketch for the <b>Arduboy FX‑C</b> (also runs on Arduboy and Arduboy FX).
-          Compile it in the Arduino IDE with the <b>Arduboy2</b> library installed and the board set to
-          <b>Arduboy</b> / <b>Arduino Leonardo</b>, then upload over USB‑C.
+          Compile it in the Arduino IDE with the <b>Arduboy2</b> and <b>ArduboyTones</b> libraries installed and
+          the board set to <b>Arduboy</b> / <b>Arduino Leonardo</b>, then upload over USB‑C.
         </p>
         <div class="form-row">
           <button id="expIno" class="btn primary">⬇ Download .ino</button>

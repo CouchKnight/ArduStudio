@@ -14,8 +14,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/build-avr}"
 CORE_URL="https://raw.githubusercontent.com/arduino/ArduinoCore-avr/1.8.6"
 AB2_URL="https://raw.githubusercontent.com/MLXXXp/Arduboy2/master/src"
+TONES_URL="https://raw.githubusercontent.com/MLXXXp/ArduboyTones/master/src"
 
-mkdir -p "$OUT/core" "$OUT/ab2" "$OUT/obj"
+mkdir -p "$OUT/core" "$OUT/ab2" "$OUT/tones" "$OUT/obj"
 
 fetch() { # fetch <url> <dest> — skip if already present
   [ -s "$2" ] || curl -sSL ${CURL_CA_BUNDLE:+--cacert "$CURL_CA_BUNDLE"} -o "$2" "$1"
@@ -41,6 +42,13 @@ Arduboy2Beep.cpp Arduboy2Core.h Arduboy2Core.cpp Arduboy2Data.cpp Sprites.h Spri
 SpritesB.h SpritesB.cpp SpritesCommon.h"
 for f in $AB2_FILES; do fetch "$AB2_URL/$f" "$OUT/ab2/$f"; done
 
+echo "== fetching ArduboyTones library =="
+for f in ArduboyTones.h ArduboyTones.cpp ArduboyTonesPitches.h; do
+  fetch "$TONES_URL/$f" "$OUT/tones/$f"
+done
+# EEPROM.h lives in the core's libraries dir; the sketch includes it directly.
+fetch "$CORE_URL/libraries/EEPROM/src/EEPROM.h" "$OUT/tones/EEPROM.h"
+
 echo "== generating sketch from demo project =="
 node -e "
 import('$ROOT/js/model.js').then(async (model) => {
@@ -54,12 +62,12 @@ echo "== compiling for ATmega32u4 =="
 CFLAGS="-c -g -Os -w -ffunction-sections -fdata-sections -mmcu=atmega32u4 \
 -DF_CPU=16000000L -DARDUINO=10819 -DARDUINO_AVR_LEONARDO -DARDUINO_ARCH_AVR \
 -DUSB_VID=0x2341 -DUSB_PID=0x8036 -DUSB_MANUFACTURER=\"ArduinoLLC\" -DUSB_PRODUCT=\"Leonardo\" \
--I$OUT/core -I$OUT/ab2"
+-I$OUT/core -I$OUT/ab2 -I$OUT/tones"
 rm -f "$OUT/obj/"*
 for f in "$OUT"/core/*.c; do
   avr-gcc $CFLAGS -std=gnu11 "$f" -o "$OUT/obj/$(basename "$f").o"
 done
-for f in "$OUT"/core/*.cpp "$OUT"/ab2/*.cpp "$OUT/sketch.cpp"; do
+for f in "$OUT"/core/*.cpp "$OUT"/ab2/*.cpp "$OUT"/tones/*.cpp "$OUT/sketch.cpp"; do
   avr-g++ $CFLAGS -std=gnu++11 -fpermissive -fno-exceptions -fno-threadsafe-statics \
     "$f" -o "$OUT/obj/$(basename "$f").o"
 done

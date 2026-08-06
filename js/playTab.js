@@ -3,7 +3,30 @@
 
 import { el, clear } from './ui.js';
 import { compileProject } from './compiler.js';
-import { Emulator, BTN } from './emulator.js';
+import { Emulator, BTN, SAVE_SIZE } from './emulator.js';
+
+// Stand-in for the Arduboy's EEPROM: save games persist across play sessions
+// and page reloads, exactly like they would on hardware.
+const EEPROM_KEY = 'ardustudio.eeprom.v1';
+
+function eepromStorage() {
+  return {
+    read() {
+      try {
+        const raw = localStorage.getItem(EEPROM_KEY);
+        if (!raw) return null;
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) && arr.length >= SAVE_SIZE ? Uint8Array.from(arr) : null;
+      } catch { return null; }
+    },
+    write(bytes) {
+      try { localStorage.setItem(EEPROM_KEY, JSON.stringify(Array.from(bytes))); } catch { /* storage full */ }
+    },
+    clear() {
+      try { localStorage.removeItem(EEPROM_KEY); } catch { /* ignore */ }
+    },
+  };
+}
 
 const KEYMAP = {
   ArrowLeft: BTN.LEFT, ArrowRight: BTN.RIGHT, ArrowUp: BTN.UP, ArrowDown: BTN.DOWN,
@@ -27,7 +50,8 @@ export function initPlayTab(app) {
   let acc = 0;
   let audio = null;
 
-  function tone(freq, frames) {
+  // The emulator reports tones as (frequency Hz, duration ms).
+  function tone(freq, ms) {
     if (!soundChk.checked) return;
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
@@ -38,16 +62,15 @@ export function initPlayTab(app) {
       osc.frequency.value = freq;
       gain.gain.value = 0.06;
       osc.connect(gain).connect(audio.destination);
-      const dur = frames / 60;
       osc.start();
-      osc.stop(audio.currentTime + dur);
+      osc.stop(audio.currentTime + ms / 1000);
     } catch { /* audio unavailable — play silently */ }
   }
 
   function rebuild() {
     try {
       compiled = compileProject(app.project);
-      emu = new Emulator(compiled, { onTone: tone });
+      emu = new Emulator(compiled, { onTone: tone, storage: eepromStorage() });
       warnBox.textContent = compiled.warnings.join('\n');
     } catch (err) {
       compiled = null;
@@ -112,6 +135,12 @@ export function initPlayTab(app) {
   document.getElementById('playPause').addEventListener('click', (e) => {
     paused = !paused;
     e.target.textContent = paused ? '▶ Resume' : '⏸ Pause';
+    canvas.focus();
+  });
+  document.getElementById('playWipe').addEventListener('click', () => {
+    eepromStorage().clear();
+    if (emu) emu.storage = eepromStorage();
+    warnBox.textContent = 'Emulated EEPROM save erased.';
     canvas.focus();
   });
 

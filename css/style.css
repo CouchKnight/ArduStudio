@@ -244,6 +244,24 @@ canvas { image-rendering: pixelated; }
 .add-event-row { margin-top: 6px; }
 select.add-event { max-width: 100%; }
 
+/* variables tab */
+.var-table { border-collapse: collapse; width: 100%; }
+.var-table th {
+  text-align: left; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted); padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.var-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.var-table td:first-child { color: var(--muted); font-family: ui-monospace, monospace; width: 32px; }
+.usage-row { font-size: 12px; }
+
+/* audio tab */
+#songEditor .form-row { margin: 4px 0; }
+#songPresets .btn { text-align: left; font-size: 12px; }
+
+button.mini:disabled { opacity: 0.35; cursor: default; }
+button.mini:disabled:hover { border-color: var(--border); }
+
 .checker {
   background:
     repeating-conic-gradient(#20262e 0% 25%, #161b22 0% 50%) 0 0/16px 16px;

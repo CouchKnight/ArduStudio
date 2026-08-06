@@ -4,13 +4,18 @@
 
 import { el, clear, drawPixelsToCanvas } from './ui.js';
 import {
-  SCENE_W, SCENE_H, makeScene, makeActor, makeTrigger,
-  sceneById, spriteById, MAX_ACTORS_PER_SCENE, MAX_TRIGGERS_PER_SCENE,
+  SCENE_W, SCENE_H, MAX_SCREENS, makeScene, makeActor, makeTrigger,
+  sceneById, spriteById, sceneCols, sceneRows, resizeScene,
+  MAX_ACTORS_PER_SCENE, MAX_TRIGGERS_PER_SCENE,
 } from './model.js';
 import { renderScriptEditor } from './scriptEditor.js';
 
-const ZOOM = 4; // canvas pixels per game pixel (tile cell = 32px)
-const CELL = 8 * ZOOM;
+// Canvas pixels per game pixel. Larger (scrolling) scenes zoom out so the
+// whole map stays visible in the editor.
+function zoomFor(scene) {
+  const span = Math.max(scene.screensX || 1, scene.screensY || 1);
+  return span >= 3 ? 2 : span === 2 ? 3 : 4;
+}
 
 export function initSceneEditor(app) {
   const canvas = document.getElementById('sceneCanvas');
@@ -44,8 +49,9 @@ export function initSceneEditor(app) {
     // start with a wall border so the player can't walk off
     const wallIdx = app.project.tiles.findIndex((t) => t.solid);
     if (wallIdx > 0) {
-      for (let x = 0; x < SCENE_W; x++) { sc.tiles[x] = wallIdx; sc.tiles[(SCENE_H - 1) * SCENE_W + x] = wallIdx; }
-      for (let y = 0; y < SCENE_H; y++) { sc.tiles[y * SCENE_W] = wallIdx; sc.tiles[y * SCENE_W + SCENE_W - 1] = wallIdx; }
+      const cw = sceneCols(sc), ch = sceneRows(sc);
+      for (let x = 0; x < cw; x++) { sc.tiles[x] = wallIdx; sc.tiles[(ch - 1) * cw + x] = wallIdx; }
+      for (let y = 0; y < ch; y++) { sc.tiles[y * cw] = wallIdx; sc.tiles[y * cw + cw - 1] = wallIdx; }
     }
     app.project.scenes.push(sc);
     app.selectedSceneId = sc.id;
@@ -56,9 +62,11 @@ export function initSceneEditor(app) {
   // ------------------------------------------------------------ mouse
   const cellFromEvent = (e) => {
     const r = canvas.getBoundingClientRect();
-    const x = Math.floor((e.clientX - r.left) * (canvas.width / r.width) / CELL);
-    const y = Math.floor((e.clientY - r.top) * (canvas.height / r.height) / CELL);
-    return { x: Math.max(0, Math.min(SCENE_W - 1, x)), y: Math.max(0, Math.min(SCENE_H - 1, y)) };
+    const sc = scene();
+    const cell = 8 * zoomFor(sc);
+    const x = Math.floor((e.clientX - r.left) * (canvas.width / r.width) / cell);
+    const y = Math.floor((e.clientY - r.top) * (canvas.height / r.height) / cell);
+    return { x: Math.max(0, Math.min(sceneCols(sc) - 1, x)), y: Math.max(0, Math.min(sceneRows(sc) - 1, y)) };
   };
 
   canvas.addEventListener('mousedown', (e) => {
@@ -118,8 +126,8 @@ export function initSceneEditor(app) {
     } else if (st.drag.kind === 'move-trigger') {
       const t = sc.triggers.find((t2) => t2.id === st.drag.id);
       if (t) {
-        t.x = Math.max(0, Math.min(SCENE_W - t.w, x - st.drag.offX));
-        t.y = Math.max(0, Math.min(SCENE_H - t.h, y - st.drag.offY));
+        t.x = Math.max(0, Math.min(sceneCols(sc) - t.w, x - st.drag.offX));
+        t.y = Math.max(0, Math.min(sceneRows(sc) - t.h, y - st.drag.offY));
         app.saveSoon();
         draw();
       }
@@ -155,7 +163,7 @@ export function initSceneEditor(app) {
 
   function paintCell(sc, x, y) {
     const idx = st.tool === 'erase' ? 0 : st.paintTile;
-    const at = y * SCENE_W + x;
+    const at = y * sceneCols(sc) + x;
     if (sc.tiles[at] !== idx) {
       sc.tiles[at] = idx;
       app.saveSoon();
@@ -196,21 +204,44 @@ export function initSceneEditor(app) {
 
   function draw() {
     const sc = scene();
+    if (!sc) return;
+    const ZOOM = zoomFor(sc);
+    const CELL = 8 * ZOOM;
+    const cw = sceneCols(sc), ch = sceneRows(sc);
+    // Resize the canvas to the scene so scrolling scenes are fully visible.
+    if (canvas.width !== cw * CELL || canvas.height !== ch * CELL) {
+      canvas.width = cw * CELL;
+      canvas.height = ch * CELL;
+    }
     ctx.fillStyle = '#0a0e13';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    if (!sc) return;
 
-    for (let y = 0; y < SCENE_H; y++) {
-      for (let x = 0; x < SCENE_W; x++) {
-        ctx.drawImage(tileThumb(sc.tiles[y * SCENE_W + x], ZOOM), x * CELL, y * CELL);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        ctx.drawImage(tileThumb(sc.tiles[y * cw + x], ZOOM), x * CELL, y * CELL);
       }
     }
 
     // grid
     ctx.strokeStyle = 'rgba(120,150,190,0.15)';
     ctx.lineWidth = 1;
-    for (let x = 1; x < SCENE_W; x++) { ctx.beginPath(); ctx.moveTo(x * CELL + 0.5, 0); ctx.lineTo(x * CELL + 0.5, canvas.height); ctx.stroke(); }
-    for (let y = 1; y < SCENE_H; y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL + 0.5); ctx.lineTo(canvas.width, y * CELL + 0.5); ctx.stroke(); }
+    for (let x = 1; x < cw; x++) { ctx.beginPath(); ctx.moveTo(x * CELL + 0.5, 0); ctx.lineTo(x * CELL + 0.5, canvas.height); ctx.stroke(); }
+    for (let y = 1; y < ch; y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL + 0.5); ctx.lineTo(canvas.width, y * CELL + 0.5); ctx.stroke(); }
+
+    // screen boundaries — each cell is one Arduboy screen of a scrolling scene
+    if (sc.screensX > 1 || sc.screensY > 1) {
+      ctx.strokeStyle = 'rgba(100,230,180,0.55)';
+      ctx.lineWidth = 2;
+      for (let i = 1; i < sc.screensX; i++) {
+        const px = i * SCENE_W * CELL;
+        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, canvas.height); ctx.stroke();
+      }
+      for (let j = 1; j < sc.screensY; j++) {
+        const py = j * SCENE_H * CELL;
+        ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(canvas.width, py); ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+    }
 
     // triggers
     for (const t of sc.triggers) {
@@ -362,7 +393,8 @@ export function initSceneEditor(app) {
         onchange: (e) => { t.name = e.target.value; app.save(); },
       })));
       const dims = el('div', { class: 'form-row' });
-      for (const [key, max] of [['x', SCENE_W - 1], ['y', SCENE_H - 1], ['w', SCENE_W], ['h', SCENE_H]]) {
+      const cw = sceneCols(sc), ch = sceneRows(sc);
+      for (const [key, max] of [['x', cw - 1], ['y', ch - 1], ['w', cw], ['h', ch]]) {
         dims.append(el('label', {}, key.toUpperCase(), el('input', {
           type: 'number', min: key === 'w' || key === 'h' ? 1 : 0, max, value: t[key],
           onchange: (e) => { t[key] = parseInt(e.target.value, 10) || 0; app.save(); draw(); },
@@ -389,6 +421,40 @@ export function initSceneEditor(app) {
       type: 'text', value: sc.name,
       onchange: (e) => { sc.name = e.target.value; app.save(); refresh(); },
     })));
+    // Scene size in screens. A 1x1 scene is a single Arduboy screen (Bitsy
+    // style); anything larger scrolls to follow the player.
+    const sizeRow = el('div', { class: 'form-row' });
+    const mkScreens = (key, label) => {
+      const sel = el('select', {
+        onchange: () => {
+          const sx = key === 'screensX' ? parseInt(sel.value, 10) : sc.screensX;
+          const sy = key === 'screensY' ? parseInt(sel.value, 10) : sc.screensY;
+          const shrinking = sx < sc.screensX || sy < sc.screensY;
+          if (shrinking && !confirm('Shrinking the scene discards tiles outside the new area. Continue?')) {
+            renderInspector();
+            return;
+          }
+          resizeScene(sc, sx, sy);
+          if (app.project.settings.startSceneId === sc.id) {
+            app.project.settings.startX = Math.min(app.project.settings.startX, sceneCols(sc) - 1);
+            app.project.settings.startY = Math.min(app.project.settings.startY, sceneRows(sc) - 1);
+          }
+          app.save();
+          refresh();
+        },
+      });
+      for (let i = 1; i <= MAX_SCREENS; i++) {
+        sel.append(el('option', { value: i, selected: sc[key] === i }, String(i)));
+      }
+      return el('label', {}, label, sel);
+    };
+    sizeRow.append(mkScreens('screensX', 'Screens →'));
+    sizeRow.append(mkScreens('screensY', '↓'));
+    box.append(sizeRow);
+    box.append(el('p', { class: 'hint' },
+      sc.screensX > 1 || sc.screensY > 1
+        ? `${sceneCols(sc)}×${sceneRows(sc)} tiles — scrolls to follow the player (green lines mark screen edges).`
+        : `${sceneCols(sc)}×${sceneRows(sc)} tiles — exactly one Arduboy screen, no scrolling.`));
     box.append(el('p', { class: 'hint' },
       `${sc.actors.length}/${MAX_ACTORS_PER_SCENE} actors · ${sc.triggers.length}/${MAX_TRIGGERS_PER_SCENE} triggers`));
     box.append(el('p', { class: 'hint' }, 'Select an actor or trigger with the ➤ tool to edit it here.'));

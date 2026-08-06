@@ -7,7 +7,7 @@
 
 import { makeDemoProject } from '../js/model.js';
 import { compileProject } from '../js/compiler.js';
-import { Emulator, BTN } from '../js/emulator.js';
+import { Emulator, BTN, memoryStorage } from '../js/emulator.js';
 
 let tones = [];
 const project = makeDemoProject();
@@ -101,7 +101,8 @@ assert(emu.text.str.includes('key'), 'slime gives up the key');
 dismissDialogue();
 assert(emu.vars[0] === 1, 'has_key variable set');
 assert(slime.hidden, 'slime hidden after giving the key');
-assert(tones.length === 1 && tones[0][0] === 880, `key pickup tone played (${JSON.stringify(tones)})`);
+assert(tones.length >= 1 && tones[0][0] === 659, `key jingle song started (${JSON.stringify(tones)})`);
+assert(emu.song.idx === 0, 'song 0 (Key jingle) is playing');
 
 console.log('— scene persistence —');
 // Walk back to the village via the west exit trigger at (0,5).
@@ -123,8 +124,10 @@ walk(BTN.UP, 1);
 steps(2, 0);
 assert(emu.script.active, 'door trigger fired');
 dismissDialogue();
-assert(emu.ramTiles[0 * 16 + 8] === 1, 'door tile swapped to floor (SET_TILE)');
-assert(tones.some(([f]) => f === 1320), 'victory tone played');
+assert(emu.tileAt(8, 0) === 1, 'door tile swapped to floor (SET_TILE)');
+// The fanfare (~820ms) finishes during the dialogue wait, so assert on the
+// notes that were emitted rather than on the song still being active.
+assert(tones.length >= 4 && tones[0][0] === 523, `victory fanfare played (${JSON.stringify(tones.slice(0, 3))})`);
 assert(!emu.tileSolid(8, 0), 'doorway is now walkable');
 
 console.log('— locked-door branch (fresh run) —');
@@ -139,7 +142,113 @@ emu2.setButtons(BTN.UP);
 for (let i = 0; i < 12; i++) emu2.step();
 emu2.setButtons(0); emu2.step();
 assert(emu2.text && emu2.text.str.includes('locked'), 'without the key the door reports locked');
-assert(emu2.ramTiles[8] === 3, 'door tile stays a door');
+assert(emu2.tileAt(8, 0) === 3, 'door tile stays a door');
+
+console.log('— scrolling scenes & camera —');
+{
+  const lake = compiled.scenes[1];
+  assert(lake.cols === 32 && lake.rows === 8, `lake scene is 2 screens wide (${lake.cols}x${lake.rows})`);
+  const e = new Emulator(compiled, { onTone: () => {} });
+  e.loadScene(1, 1, 5, false);
+  e.updateCamera();
+  assert(e.camX === 0, `camera clamps to left edge near x=1 (camX=${e.camX})`);
+  // Standing at the far east edge should scroll the camera to its maximum.
+  e.player.px = 30 * 8; e.player.py = 5 * 8;
+  e.updateCamera();
+  assert(e.camX === 32 * 8 - 128, `camera clamps to right edge (camX=${e.camX}, max=${32 * 8 - 128})`);
+  // A single-screen scene must never scroll.
+  e.loadScene(0, 2, 3, false);
+  e.player.px = 15 * 8;
+  e.updateCamera();
+  assert(e.camX === 0 && e.camY === 0, `single-screen scene does not scroll (${e.camX},${e.camY})`);
+}
+
+console.log('— EEPROM save games —');
+{
+  const store = memoryStorage();
+  const e = new Emulator(compiled, { onTone: () => {}, storage: store });
+  assert(!e.saveExists(), 'no save present initially');
+  e.vars[0] = 1; e.vars[1] = 1;
+  e.loadScene(1, 3, 4, false);
+  e.saveGame();
+  assert(e.saveExists(), 'save written');
+
+  // A fresh run should restore scene, position and variables.
+  const e2 = new Emulator(compiled, { onTone: () => {}, storage: store });
+  assert(e2.vars[0] === 0, 'fresh emulator starts with cleared variables');
+  assert(e2.loadGame(), 'loadGame reports success');
+  assert(e2.sceneIdx === 1, `restored scene (got ${e2.sceneIdx})`);
+  assert(Math.round(e2.player.px / 8) === 3 && Math.round(e2.player.py / 8) === 4,
+    `restored player position (got ${Math.round(e2.player.px / 8)},${Math.round(e2.player.py / 8)})`);
+  assert(e2.vars[0] === 1 && e2.vars[1] === 1, 'restored variables');
+
+  store.clear();
+  assert(!e2.saveExists(), 'delete save clears it');
+  const e3 = new Emulator(compiled, { onTone: () => {}, storage: store });
+  assert(!e3.loadGame(), 'loadGame on empty storage reports failure');
+}
+
+console.log('— songs —');
+{
+  assert(compiled.songs.length === 2, `two songs compiled (${compiled.songs.length})`);
+  const played = [];
+  const e = new Emulator(compiled, { onTone: (f, d) => played.push([f, d]) });
+  e.playSong(0, false);
+  assert(played.length === 1 && played[0][0] === 659, `first note fires immediately (${JSON.stringify(played)})`);
+  // Run long enough for the whole 3-note jingle (80+80+140ms = 300ms = 18 frames).
+  for (let i = 0; i < 40; i++) e.stepSong();
+  assert(played.length === 3, `all 3 notes played (${played.length})`);
+  assert(e.song.idx === -1, 'song stops at the end when not looping');
+
+  const looped = [];
+  const e2 = new Emulator(compiled, { onTone: (f, d) => looped.push([f, d]) });
+  e2.playSong(0, true);
+  for (let i = 0; i < 60; i++) e2.stepSong();
+  assert(looped.length > 3, `looping song repeats (${looped.length} notes)`);
+  assert(e2.song.idx === 0, 'looping song stays active');
+  e2.stopSong();
+  assert(e2.song.idx === -1, 'stopSong silences it');
+}
+
+console.log('— move actor event —');
+{
+  // The villager walks from (3,5) to (4,5) after handing over the hint,
+  // once has_key is set. Blocking move: the script waits for arrival.
+  const e = new Emulator(compiled, { onTone: () => {} });
+  e.vars[0] = 1; // has_key
+  const villager = e.actors[0];
+  const startX = villager.tx;
+  e.player.px = villager.tx * 8; e.player.py = (villager.ty + 1) * 8;
+  e.player.tx = villager.tx; e.player.ty = villager.ty + 1;
+  e.player.fx = 0; e.player.fy = -1;
+  e.script.active = false; e.text = null;
+  e.setButtons(BTN.A); e.step(); e.setButtons(0); e.step();
+  assert(e.script.active, 'villager script started');
+  for (let i = 0; i < 400 && e.text; i++) { // clear the dialogue
+    e.setButtons(0); e.step();
+    if (i % 60 === 59) { e.setButtons(BTN.A); e.step(); }
+  }
+  let guard = 0;
+  while (e.script.active && guard++ < 600) { e.setButtons(0); e.step(); }
+  assert(villager.tx === 4, `villager moved to x=4 (from ${startX}, now ${villager.tx})`);
+  assert(Math.round(villager.px / 8) === 4, `villager finished walking (px=${villager.px})`);
+  assert(!villager.scriptMove, 'scripted move completed');
+  assert(!e.script.active, 'script resumed and finished after the move');
+}
+
+console.log('— tile override table —');
+{
+  const e = new Emulator(compiled, { onTone: () => {} });
+  const before = e.tileAt(0, 0);
+  e.setTile(0, 0, 1);
+  assert(e.tileAt(0, 0) === 1, 'setTile applies an override');
+  assert(e.baseTiles[0] === before, 'base (PROGMEM) map is not mutated');
+  e.setTile(0, 0, 5);
+  assert(e.tileAt(0, 0) === 5 && e.overrides.length === 1, 'repeat setTile reuses the same override slot');
+  // Reloading the scene clears overrides, as on hardware.
+  e.loadScene(0, 2, 3, false);
+  assert(e.overrides.length === 0 && e.tileAt(0, 0) === before, 'scene reload restores base tiles');
+}
 
 console.log('— bytecode sanity —');
 assert(compiled.code.length > 40 && compiled.code.length < 4096, `bytecode size sensible (${compiled.code.length} bytes)`);

@@ -7,15 +7,22 @@
 // Coordinate system: scenes are 16x8 tiles of 8x8 pixels = 128x64,
 // exactly one Arduboy screen (Bitsy-style single-screen rooms).
 
-export const SCENE_W = 16; // tiles
-export const SCENE_H = 8;  // tiles
+export const SCENE_W = 16; // tiles per screen, horizontally
+export const SCENE_H = 8;  // tiles per screen, vertically
 export const TILE = 8;     // pixels
+export const MAX_SCREENS = 4;   // max screens per axis for a scrolling scene
 export const MAX_ACTORS_PER_SCENE = 8;
 export const MAX_TRIGGERS_PER_SCENE = 8;
 export const MAX_VARIABLES = 32;
 export const MAX_TILES = 64;
 export const MAX_SPRITES = 32;
 export const MAX_FRAMES = 4;
+export const MAX_SONGS = 32;
+export const MAX_SONG_NOTES = 192;
+
+// Tile dimensions of a scene (scenes can span multiple screens and scroll).
+export function sceneCols(scene) { return SCENE_W * (scene.screensX || 1); }
+export function sceneRows(scene) { return SCENE_H * (scene.screensY || 1); }
 
 let idCounter = 0;
 export function uid(prefix) {
@@ -114,16 +121,113 @@ export function makeTrigger(name, x, y, w = 1, h = 1) {
   return { id: uid('trig'), name, x, y, w, h, script: [] };
 }
 
-export function makeScene(name) {
+export function makeScene(name, screensX = 1, screensY = 1) {
   return {
     id: uid('scene'),
     name,
-    tiles: new Array(SCENE_W * SCENE_H).fill(0), // indices into project.tiles
+    screensX,
+    screensY,
+    tiles: new Array(SCENE_W * screensX * SCENE_H * screensY).fill(0), // indices into project.tiles
     actors: [],
     triggers: [],
     onEnter: [], // script run when the scene is entered
   };
 }
+
+// Change a scene's screen span, preserving the overlapping tile region.
+export function resizeScene(scene, screensX, screensY) {
+  const oldCols = sceneCols(scene), oldRows = sceneRows(scene);
+  const cols = SCENE_W * screensX, rows = SCENE_H * screensY;
+  const out = new Array(cols * rows).fill(0);
+  for (let y = 0; y < Math.min(rows, oldRows); y++) {
+    for (let x = 0; x < Math.min(cols, oldCols); x++) {
+      out[y * cols + x] = scene.tiles[y * oldCols + x];
+    }
+  }
+  scene.screensX = screensX;
+  scene.screensY = screensY;
+  scene.tiles = out;
+  scene.actors.forEach((a) => { a.x = Math.min(a.x, cols - 1); a.y = Math.min(a.y, rows - 1); });
+  scene.triggers.forEach((t) => {
+    t.x = Math.min(t.x, cols - 1); t.y = Math.min(t.y, rows - 1);
+    t.w = Math.min(t.w, cols - t.x); t.h = Math.min(t.h, rows - t.y);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Songs (ArduboyTones sequences: frequency/duration pairs)
+// ---------------------------------------------------------------------------
+
+export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+// Frequency of a note like 'C4', 'A#3'. Equal temperament, A4 = 440 Hz.
+export function noteFreq(name) {
+  const m = /^([A-G]#?)(\d)$/.exec(name);
+  if (!m) return 0;
+  const idx = NOTE_NAMES.indexOf(m[1]);
+  const octave = parseInt(m[2], 10);
+  const semisFromA4 = (octave - 4) * 12 + (idx - 9);
+  return Math.round(440 * Math.pow(2, semisFromA4 / 12));
+}
+
+// A song note: freq in Hz (0 = rest) and duration in ms.
+export function makeSong(name) {
+  return { id: uid('song'), name, notes: [] };
+}
+
+// Quick-start material for the Audio tab (in the spirit of the Arduboy Cloud
+// sound tools): a few classic game jingles and retro sound effects.
+export const SONG_PRESETS = [
+  {
+    name: 'Pickup jingle',
+    notes: [
+      { f: noteFreq('E5'), d: 80 }, { f: noteFreq('G5'), d: 80 },
+      { f: noteFreq('C6'), d: 140 },
+    ],
+  },
+  {
+    name: 'Victory fanfare',
+    notes: [
+      { f: noteFreq('C5'), d: 120 }, { f: noteFreq('E5'), d: 120 },
+      { f: noteFreq('G5'), d: 120 }, { f: 0, d: 40 },
+      { f: noteFreq('G5'), d: 100 }, { f: noteFreq('C6'), d: 320 },
+    ],
+  },
+  {
+    name: 'Hurt / hit',
+    notes: [
+      { f: noteFreq('B3'), d: 60 }, { f: noteFreq('G3'), d: 60 },
+      { f: noteFreq('E3'), d: 90 },
+    ],
+  },
+  {
+    name: 'Jump',
+    notes: [
+      { f: noteFreq('C4'), d: 30 }, { f: noteFreq('E4'), d: 30 },
+      { f: noteFreq('G4'), d: 30 }, { f: noteFreq('C5'), d: 50 },
+    ],
+  },
+  {
+    name: 'Game over',
+    notes: [
+      { f: noteFreq('C4'), d: 200 }, { f: noteFreq('B3'), d: 200 },
+      { f: noteFreq('A#3'), d: 200 }, { f: noteFreq('A3'), d: 420 },
+    ],
+  },
+  {
+    name: 'Overworld loop (8 bars)',
+    notes: [
+      { f: noteFreq('C4'), d: 150 }, { f: noteFreq('E4'), d: 150 },
+      { f: noteFreq('G4'), d: 150 }, { f: noteFreq('E4'), d: 150 },
+      { f: noteFreq('F4'), d: 150 }, { f: noteFreq('A4'), d: 150 },
+      { f: noteFreq('C5'), d: 150 }, { f: noteFreq('A4'), d: 150 },
+      { f: noteFreq('G4'), d: 150 }, { f: noteFreq('B4'), d: 150 },
+      { f: noteFreq('D5'), d: 150 }, { f: noteFreq('B4'), d: 150 },
+      { f: noteFreq('C5'), d: 300 }, { f: 0, d: 150 },
+      { f: noteFreq('G4'), d: 300 }, { f: 0, d: 150 },
+    ],
+  },
+];
 
 export function makeEvent(type) {
   switch (type) {
@@ -136,8 +240,15 @@ export function makeEvent(type) {
     case 'WAIT':        return { id: uid('ev'), type, frames: 30 };
     case 'ACTOR_HIDE':  return { id: uid('ev'), type, target: 'self' };
     case 'ACTOR_SHOW':  return { id: uid('ev'), type, target: 'self' };
+    case 'ACTOR_MOVE':  return { id: uid('ev'), type, target: 'self', x: 2, y: 4, instant: false };
     case 'SET_TILE':    return { id: uid('ev'), type, x: 0, y: 0, tileIndex: 0 };
     case 'PLAYER_POS':  return { id: uid('ev'), type, x: 2, y: 4 };
+    case 'PLAY_SONG':   return { id: uid('ev'), type, songId: '', loop: false };
+    case 'STOP_SONG':   return { id: uid('ev'), type };
+    case 'SAVE_GAME':   return { id: uid('ev'), type };
+    case 'LOAD_GAME':   return { id: uid('ev'), type };
+    case 'SAVE_CHECK':  return { id: uid('ev'), type, varId: '' };
+    case 'DELETE_SAVE': return { id: uid('ev'), type };
     case 'END_SCRIPT':  return { id: uid('ev'), type };
     default: throw new Error(`Unknown event type ${type}`);
   }
@@ -153,7 +264,14 @@ export const EVENT_DEFS = [
   { type: 'IF_VAR',       label: 'If Variable…',      group: 'Variables' },
   { type: 'ACTOR_HIDE',   label: 'Hide Actor',        group: 'Actors' },
   { type: 'ACTOR_SHOW',   label: 'Show Actor',        group: 'Actors' },
+  { type: 'ACTOR_MOVE',   label: 'Move Actor',        group: 'Actors' },
   { type: 'TONE',         label: 'Play Tone',         group: 'Sound' },
+  { type: 'PLAY_SONG',    label: 'Play Song',         group: 'Sound' },
+  { type: 'STOP_SONG',    label: 'Stop Song',         group: 'Sound' },
+  { type: 'SAVE_GAME',    label: 'Save Game',         group: 'Save games' },
+  { type: 'LOAD_GAME',    label: 'Load Game',         group: 'Save games' },
+  { type: 'SAVE_CHECK',   label: 'Save Exists → Var', group: 'Save games' },
+  { type: 'DELETE_SAVE',  label: 'Delete Save',       group: 'Save games' },
   { type: 'WAIT',         label: 'Wait',              group: 'Timing' },
   { type: 'END_SCRIPT',   label: 'Stop Script',       group: 'Timing' },
 ];
@@ -354,6 +472,7 @@ export function makeProject(name = 'Untitled Game') {
     ],
     tiles,
     sprites,
+    songs: [],
     scenes: [scene],
   };
 }
@@ -387,18 +506,27 @@ export function makeDemoProject() {
     'WWWWWWWWWWWWWWWW',
   ]);
 
-  const lake = makeScene('Lake');
+  // The lake spans two screens horizontally to show off scrolling scenes.
+  const lake = makeScene('Lake', 2, 1);
+  const lakeRow = (s) => (s + '.'.repeat(32)).slice(0, 31) + 'W'; // pad/trim to 32, walled east edge
   lake.tiles = map([
-    'WWWWWWWWDWWWWWWW',
-    'W....~~~~~~....W',
-    'W...~~~~~~~~...W',
-    'W..............W',
-    'W.....T........W',
-    'W..........T...W',
-    'W..T...........W',
-    'WWWWWWWWWWWWWWWW',
+    'W'.repeat(32),
+    lakeRow('W....~~~~~~........~~~~~~~~'),
+    lakeRow('W...~~~~~~~~.....~~~~~~~~~~'),
+    lakeRow('W'),
+    lakeRow('W.....T........T.........T'),
+    lakeRow('W..........T.............T'),
+    lakeRow('W..T.................T'),
+    'W'.repeat(32),
   ]);
   p.scenes.push(lake);
+
+  // Songs for the demo (see the Audio tab).
+  const sngKey = makeSong('Key jingle');
+  sngKey.notes = SONG_PRESETS[0].notes.map((n) => ({ ...n }));
+  const sngWin = makeSong('Victory fanfare');
+  sngWin.notes = SONG_PRESETS[1].notes.map((n) => ({ ...n }));
+  p.songs.push(sngKey, sngWin);
 
   const villager = makeActor('Villager', p.sprites[1].id, 4, 3);
   villager.x = 3; villager.y = 5;
@@ -406,22 +534,25 @@ export function makeDemoProject() {
     const iff = makeEvent('IF_VAR');
     iff.varId = vHasKey.id; iff.cmp = '=='; iff.value = 1;
     const t1 = makeEvent('TEXT'); t1.text = 'You found it! Use the key on the north door.';
+    const step = makeEvent('ACTOR_MOVE'); step.target = 'self'; step.x = 4; step.y = 5;
     const e1 = makeEvent('TEXT'); e1.text = 'The door key fell in the lake up north. A slime swallowed it!';
-    iff.then = [t1]; iff.else = [e1];
+    iff.then = [t1, step]; iff.else = [e1];
     villager.script = [iff];
   }
   outdoors.actors.push(villager);
 
-  const slime = makeActor('Slime', p.sprites[2].id, 8, 4);
+  // The slime patrols on the far screen of the lake, so reaching it means
+  // walking through the scrolling section.
+  const slime = makeActor('Slime', p.sprites[2].id, 20, 4);
   slime.movement = 'patrolH';
   {
     const iff = makeEvent('IF_VAR');
     iff.varId = vHasKey.id; iff.cmp = '=='; iff.value = 0;
     const t1 = makeEvent('TEXT'); t1.text = 'The slime burps up a rusty key!';
     const sv = makeEvent('SET_VAR'); sv.varId = vHasKey.id; sv.value = 1;
-    const tone = makeEvent('TONE'); tone.freq = 880; tone.frames = 10;
+    const jingle = makeEvent('PLAY_SONG'); jingle.songId = sngKey.id;
     const hide = makeEvent('ACTOR_HIDE'); hide.target = 'self';
-    iff.then = [t1, sv, tone, hide];
+    iff.then = [t1, sv, jingle, hide];
     iff.else = [];
     slime.script = [iff];
   }
@@ -442,10 +573,10 @@ export function makeDemoProject() {
     const iff = makeEvent('IF_VAR');
     iff.varId = vHasKey.id; iff.cmp = '=='; iff.value = 1;
     const t1 = makeEvent('TEXT'); t1.text = 'The key fits! You escaped the village.\fTHE END\n(made with ArduStudio)';
-    const tone = makeEvent('TONE'); tone.freq = 1320; tone.frames = 20;
+    const fanfare = makeEvent('PLAY_SONG'); fanfare.songId = sngWin.id;
     const open = makeEvent('SET_TILE'); open.x = 8; open.y = 0; open.tileIndex = T.floor;
     const e1 = makeEvent('TEXT'); e1.text = 'The door is locked tight.';
-    iff.then = [tone, open, t1];
+    iff.then = [fanfare, open, t1];
     iff.else = [e1];
     doorTrig.script = [iff];
   }
@@ -471,7 +602,7 @@ export function makeDemoProject() {
     backToVillage.script = [sw];
   }
   lake.triggers.push(backToVillage);
-  lake.tiles[5 * SCENE_W + 0] = T.floor; // opening in the wall
+  lake.tiles[5 * sceneCols(lake) + 0] = T.floor; // opening in the wall
 
   // Show the intro only on the first visit.
   {
@@ -510,10 +641,21 @@ export function normalizeProject(p) {
   p.variables = p.variables || [];
   p.tiles = (p.tiles || []).slice(0, MAX_TILES);
   p.sprites = (p.sprites || []).slice(0, MAX_SPRITES);
+  p.songs = (p.songs || []).slice(0, MAX_SONGS);
+  for (const s of p.songs) {
+    s.notes = (s.notes || []).slice(0, MAX_SONG_NOTES).map((n) => ({
+      f: Math.max(0, Math.min(32767, n.f | 0)),
+      d: Math.max(1, Math.min(65535, n.d | 0)),
+    }));
+  }
   p.scenes = p.scenes || [];
   for (const sc of p.scenes) {
-    sc.tiles = (sc.tiles || []).slice(0, SCENE_W * SCENE_H);
-    while (sc.tiles.length < SCENE_W * SCENE_H) sc.tiles.push(0);
+    // Projects saved before scrolling scenes existed have no screen span.
+    sc.screensX = Math.max(1, Math.min(MAX_SCREENS, sc.screensX | 0 || 1));
+    sc.screensY = Math.max(1, Math.min(MAX_SCREENS, sc.screensY | 0 || 1));
+    const size = sceneCols(sc) * sceneRows(sc);
+    sc.tiles = (sc.tiles || []).slice(0, size);
+    while (sc.tiles.length < size) sc.tiles.push(0);
     sc.tiles = sc.tiles.map((t) => (t >= 0 && t < p.tiles.length ? t : 0));
     sc.actors = (sc.actors || []).slice(0, MAX_ACTORS_PER_SCENE);
     sc.triggers = (sc.triggers || []).slice(0, MAX_TRIGGERS_PER_SCENE);
