@@ -1,20 +1,22 @@
-# Deploys ArduStudio to GitHub Pages.
+# Deploys ArduStudio to GitHub Pages. MANUAL ONLY — see below.
 #
-# This replaces the legacy "Deploy from a branch" pipeline (GitHub's
-# auto-generated dynamic/pages/pages-build-deployment workflow), whose deploy
-# stage was hanging until it hit the 10 minute timeout. Using an explicit
-# workflow puts the deployment on the modern Pages path instead.
+# Pages deployments for this repository proved unreliable: they consistently
+# took ~9-10 minutes, right at deploy-pages' hard ceiling. That ceiling cannot
+# be raised — the action clamps its `timeout` input to 600000ms (10 minutes)
+# and, on expiry, cancels the in-flight deployment. Runs also hit intermittent
+# "Invalid actions OIDC token" errors. Neither is fixable from the repo side.
 #
-# configure-pages has enablement:true, so this workflow switches the
-# repository's Pages source to "GitHub Actions" by itself on the first run —
-# no change needed in Settings -> Pages.
+# The site is published by other means now, so this workflow no longer runs on
+# push; leaving it on push would just produce a failed run on every commit.
+# Start it by hand from the Actions tab ("Run workflow") if you ever want to
+# try a Pages deploy again.
+#
+# configure-pages has enablement:true, so it switches the repository's Pages
+# source to "GitHub Actions" by itself — no change needed in Settings -> Pages.
 
 name: Deploy to GitHub Pages
 
 on:
-  push:
-    branches: [main]
-  # Lets you re-run a deployment by hand from the Actions tab.
   workflow_dispatch:
 
 # Permissions the deploy needs: read the repo, publish Pages, and mint the
@@ -60,12 +62,7 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
         with:
-          # deploy-pages defaults to giving up after 10 minutes, and on timeout
-          # it actively CANCELS the deployment. Every previous attempt died at
-          # exactly 10:05 that way while Pages still reported
-          # "deployment_in_progress" — i.e. the deploy was progressing and got
-          # killed rather than failing on its own. Allow 30 minutes so a slow
-          # deployment can actually finish.
-          timeout: 1800000
+          # NOTE: `timeout` cannot be raised above 600000ms — larger values are
+          # silently clamped to that maximum, so there is no point setting one.
           # Tolerate more transient status-check errors before bailing out.
           error_count: 20
