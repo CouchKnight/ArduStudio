@@ -1,0 +1,61 @@
+# Deploys ArduStudio to GitHub Pages.
+#
+# This replaces the legacy "Deploy from a branch" pipeline (GitHub's
+# auto-generated dynamic/pages/pages-build-deployment workflow), whose deploy
+# stage was hanging until it hit the 10 minute timeout. Using an explicit
+# workflow puts the deployment on the modern Pages path instead.
+#
+# configure-pages has enablement:true, so this workflow switches the
+# repository's Pages source to "GitHub Actions" by itself on the first run —
+# no change needed in Settings -> Pages.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Lets you re-run a deployment by hand from the Actions tab.
+  workflow_dispatch:
+
+# Permissions the deploy needs: read the repo, publish Pages, and mint the
+# OIDC token deploy-pages uses to authenticate.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages deployments at once, and let an in-flight deployment
+# finish rather than cancelling it part way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Turn Pages on / switch it to Actions-based deployment if needed.
+          enablement: true
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # ArduStudio is a static site served straight from the repo root.
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
