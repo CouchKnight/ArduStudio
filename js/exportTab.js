@@ -4,7 +4,7 @@
 import { el, clear, download } from './ui.js';
 import { makeProject, makeDemoProject, normalizeProject } from './model.js';
 import { generateIno } from './codegen.js';
-import { isDesktop, saveProjectNative, openProjectNative, exportSketchNative } from './desktop.js';
+import { saveProject, openProject, exportSketch, ioMode } from './fileio.js';
 
 export function initExportTab(app) {
   const nameInput = document.getElementById('expName');
@@ -39,12 +39,11 @@ export function initExportTab(app) {
     }
   }
 
-  // In the desktop app these use real OS dialogs; in a browser they fall back
-  // to a download / file-picker.
+  // fileio picks the best available mechanism: Electron dialogs, the browser's
+  // native file picker (Chrome/Edge, including file://), or a plain download.
   document.getElementById('expIno').addEventListener('click', async () => {
-    if (isDesktop()) { await exportSketchNative(app); tryGenerate(); return; }
-    const ino = tryGenerate();
-    if (ino) download(sketchFilename(), ino, 'text/x-arduino');
+    tryGenerate();          // refresh stats / warnings
+    await exportSketch(app);
   });
 
   document.getElementById('expCopyIno').addEventListener('click', async () => {
@@ -53,16 +52,13 @@ export function initExportTab(app) {
     try { await navigator.clipboard.writeText(ino); } catch { /* clipboard blocked */ }
   });
 
-  document.getElementById('expSave').addEventListener('click', async () => {
-    if (isDesktop()) { await saveProjectNative(app, true); return; }
-    const base = (app.project.name || 'project').replace(/[^A-Za-z0-9_-]+/g, '_');
-    download(base + '.ardustudio.json', JSON.stringify(app.project, null, 2), 'application/json');
-  });
+  document.getElementById('expSave').addEventListener('click', () => saveProject(app, false));
+  document.getElementById('expSaveAs').addEventListener('click', () => saveProject(app, true));
 
   const loadFile = document.getElementById('expLoadFile');
   document.getElementById('expLoad').addEventListener('click', async () => {
-    if (isDesktop()) { await openProjectNative(app); return; }
-    loadFile.click();
+    // openProject returns false when no picker is available; fall back to the input.
+    if (!(await openProject(app))) loadFile.click();
   });
   loadFile.addEventListener('change', () => {
     const f = loadFile.files && loadFile.files[0];
@@ -97,7 +93,19 @@ export function initExportTab(app) {
     sel.onchange = () => { app.project.settings.playerSpriteId = sel.value; app.save(); };
   }
 
+  function renderIoHint() {
+    const box = document.getElementById('expIoHint');
+    if (!box) return;
+    const mode = ioMode();
+    box.textContent = mode === 'desktop'
+      ? 'Desktop app: Save and Open use native dialogs (also on the File menu).'
+      : mode === 'picker'
+        ? 'Your browser supports native file dialogs — Save writes straight back to the same file.'
+        : 'This browser has no file-picker API, so Save downloads a file and Open uses a file chooser.';
+  }
+
   function refresh() {
+    renderIoHint();
     nameInput.value = app.project.name || '';
     authorInput.value = app.project.author || '';
     renderPlayerSprite();

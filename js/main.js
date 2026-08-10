@@ -11,6 +11,7 @@ import { initPlayTab } from './playTab.js';
 import { initExportTab } from './exportTab.js';
 import { initHelpTab } from './helpTab.js';
 import { initDesktop } from './desktop.js';
+import { currentFileName, saveProject, openProject, isDesktop } from './fileio.js';
 
 const STORAGE_KEY = 'ardustudio.project.v1';
 const HISTORY_LIMIT = 100;
@@ -57,7 +58,9 @@ const app = {
   },
 
   renderTopbar() {
-    document.getElementById('projectName').textContent = app.project.name || 'Untitled';
+    const file = currentFileName();
+    document.getElementById('projectName').textContent =
+      (app.project.name || 'Untitled') + (file ? ` — ${file}` : '');
   },
 };
 
@@ -144,6 +147,8 @@ window.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase();
   if (key === 'z' && !e.shiftKey) { e.preventDefault(); app.undo(); }
   else if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); app.redo(); }
+  else if (!isDesktop() && key === 's') { e.preventDefault(); saveProject(app, e.shiftKey); }
+  else if (!isDesktop() && key === 'o') { e.preventDefault(); openProject(app); }
 });
 
 function refreshActive(force) {

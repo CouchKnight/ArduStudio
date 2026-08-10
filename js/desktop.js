@@ -1,84 +1,40 @@
-// Desktop (Electron) integration.
+// Electron desktop integration: wires the native File/Edit menu to the app.
 //
-// Everything here is a no-op when `window.ardustudioNative` is absent, so the
-// plain browser build and the served version behave exactly as before. The
-// native API is provided by desktop/preload.cjs.
+// No-ops when window.ardustudioNative is absent, so the browser and portable
+// builds are unaffected. The actual file I/O lives in js/fileio.js, which also
+// serves the browser via the File System Access API.
 
-import { makeProject, makeDemoProject, normalizeProject } from './model.js';
-import { generateIno } from './codegen.js';
+import { makeProject, makeDemoProject } from './model.js';
+import { isDesktop, saveProject, openProject, exportSketch, forgetFile } from './fileio.js';
 
-export function isDesktop() {
-  return typeof window !== 'undefined' && !!window.ardustudioNative;
-}
-
-const native = () => window.ardustudioNative;
-
-function projectFilename(project, ext) {
-  const base = (project.name || 'project').replace(/[^A-Za-z0-9_-]+/g, '_') || 'project';
-  return base + ext;
-}
-
-// Save the current project, prompting for a location on Save As (or when the
-// project has never been saved). Returns true if a file was written.
-export async function saveProjectNative(app, saveAs = false) {
-  const text = JSON.stringify(app.project, null, 2);
-  const res = await native().saveProject(text, projectFilename(app.project, '.ardustudio.json'), saveAs);
-  return !!res;
-}
-
-export async function openProjectNative(app) {
-  const res = await native().openProject();
-  if (!res) return false;
-  try {
-    app.setProject(normalizeProject(JSON.parse(res.text)));
-    return true;
-  } catch (err) {
-    await native().message('Could not open that project', err.message);
-    return false;
-  }
-}
-
-export async function exportSketchNative(app) {
-  try {
-    const { ino, warnings } = generateIno(app.project);
-    const res = await native().exportSketch(ino, projectFilename(app.project, '.ino'));
-    if (res && warnings.length) {
-      await native().message('Sketch exported with warnings', warnings.join('\n'));
-    }
-    return !!res;
-  } catch (err) {
-    await native().message('Export failed', err.message);
-    return false;
-  }
-}
-
-// Wire the native File/Edit menu to the app.
 export function initDesktop(app) {
   if (!isDesktop()) return;
 
-  native().onMenu(async (command) => {
+  window.ardustudioNative.onMenu(async (command) => {
     switch (command) {
       case 'new':
         if (!confirm('Start a new blank project? Unsaved changes will be lost.')) return;
         app.setProject(makeProject());
-        await native().forgetPath();
+        forgetFile();
+        await window.ardustudioNative.forgetPath();
         break;
       case 'demo':
         if (!confirm('Load the Key Quest demo? Unsaved changes will be lost.')) return;
         app.setProject(makeDemoProject());
-        await native().forgetPath();
+        forgetFile();
+        await window.ardustudioNative.forgetPath();
         break;
       case 'open':
-        await openProjectNative(app);
+        await openProject(app);
         break;
       case 'save':
-        await saveProjectNative(app, false);
+        await saveProject(app, false);
         break;
       case 'saveAs':
-        await saveProjectNative(app, true);
+        await saveProject(app, true);
         break;
       case 'exportIno':
-        await exportSketchNative(app);
+        await exportSketch(app);
         break;
       case 'undo':
         app.undo();

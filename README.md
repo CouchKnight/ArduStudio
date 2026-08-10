@@ -10,15 +10,18 @@ the hardware.
 
 ### Three ways to run it
 
-**1. Portable single file (offline, no install).** Build `dist/ArduStudio.html` — the whole
-app in one ~210 KB file. Double-click it; it works offline in any browser, makes zero network
-requests, and needs no server:
+**1. Portable single file (offline, no install) — the recommended way.** Build
+`dist/ArduStudio.html` — the whole app in one ~215 KB file. Double-click it; it works offline in
+any browser, makes zero network requests, and needs no server. In **Chrome and Edge it gets real
+native Save/Open dialogs** (the File System Access API works on `file://` pages), so Save writes
+straight back to the same file just like a desktop app:
 
 ```bash
 npm install && npm run build:offline    # → dist/ArduStudio.html
 ```
 
-**2. Desktop app** with a native File menu and OS Open/Save dialogs:
+**2. Desktop app** — the same thing in an Electron window with a native File menu. Worth it
+mainly if you want a taskbar app or use Firefox (which has no file-picker API):
 
 ```bash
 npm run start:desktop      # run it
@@ -137,10 +140,18 @@ inlines it, plus the CSS, into one HTML file. The desktop app loads that same bu
 rather than `index.html` — which sidesteps the ES-module-over-`file://` restriction entirely
 and guarantees the desktop and portable builds run identical code.
 
-In the desktop app, **File → New / Open / Save / Save As / Export .ino** use real OS dialogs
-and the window title shows the open project. The same buttons in the Export tab route to
-native dialogs on the desktop and fall back to browser download/upload elsewhere, so one
-codebase serves both.
+File I/O (`js/fileio.js`) has three tiers and picks the best available, so one codebase serves
+every build:
+
+1. **Electron** — native dialogs via the main process.
+2. **File System Access API** — `showSaveFilePicker` / `showOpenFilePicker`. Chrome and Edge
+   expose these even on `file://` pages, so the portable single file gets real Save/Open dialogs
+   with no packaging at all. The file handle is kept, so *Save* overwrites in place and
+   *Save As* re-prompts.
+3. **Fallback** — download + file chooser, for Firefox and older browsers.
+
+The Export tab says which mode is active, and the title bar shows the open filename.
+<kbd>Ctrl</kbd>+<kbd>S</kbd> saves and <kbd>Ctrl</kbd>+<kbd>O</kbd> opens.
 
 Notes on the packaged apps:
 

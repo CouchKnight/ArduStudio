@@ -213,12 +213,14 @@
       <div class="panel">
         <div class="panel-title">Project file</div>
         <div class="form-row">
-          <button id="expSave" class="btn">⬇ Save project (.ardustudio.json)</button>
-          <button id="expLoad" class="btn">⬆ Load project…</button>
+          <button id="expSave" class="btn">💾 Save project</button>
+          <button id="expSaveAs" class="btn">Save As…</button>
+          <button id="expLoad" class="btn">⬆ Open project…</button>
           <input type="file" id="expLoadFile" accept=".json,.ardustudio" hidden>
           <button id="expNew" class="btn">✦ New blank project</button>
           <button id="expDemo" class="btn">★ Load demo (Key Quest)</button>
         </div>
+        <p class="hint" id="expIoHint"></p>
         <p class="hint">Projects also autosave to this browser (localStorage) as you edit.</p>
       </div>
     </div>

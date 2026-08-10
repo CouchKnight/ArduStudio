@@ -130,17 +130,22 @@ it would break.</p>
 <h2>Running offline</h2>
 <p>ArduStudio ships in three forms, all identical in behaviour:</p>
 <ul>
-  <li><b>Portable single file</b> — <code>dist/ArduStudio.html</code>, about 210 KB. Double-click
-      it; it runs offline in any browser and makes no network requests at all. Build it with
-      <code>npm run build:offline</code>.</li>
-  <li><b>Desktop app</b> (<code>npm run package:win</code> / <code>package:linux</code>) — adds a
-      native <b>File</b> menu with real Open/Save dialogs, so projects live wherever you put them
-      instead of in the Downloads folder.</li>
+  <li><b>Portable single file</b> — <code>dist/ArduStudio.html</code>, about 215 KB. Double-click
+      it; it runs offline in any browser and makes no network requests at all. In <b>Chrome and
+      Edge</b> you also get real Save/Open dialogs, and <b>Save</b> writes straight back to the
+      same file. Build it with <code>npm run build:offline</code>.</li>
+  <li><b>Desktop app</b> (<code>npm run package:win</code> / <code>package:linux</code>) — the same
+      app in its own window with a native <b>File</b> menu. Mostly useful if you want a taskbar
+      app, or use Firefox, which has no file-picker API and falls back to downloads.</li>
   <li><b>From source</b>, served by any static web server.</li>
 </ul>
 <p class="hint">The source <code>index.html</code> can't be opened directly from disk because
 browsers block ES module scripts over <code>file://</code> — that is what the offline build
 exists to solve.</p>
+
+<p class="hint"><kbd>Ctrl</kbd>+<kbd>S</kbd> saves, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>
+saves as, <kbd>Ctrl</kbd>+<kbd>O</kbd> opens. The Export tab shows which file mode is active and
+the title bar shows the open filename.</p>
 
 <h2>Flashing to the Arduboy FX‑C</h2>
 <ol>
