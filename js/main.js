@@ -10,6 +10,7 @@ import { initVariablesTab } from './variablesTab.js';
 import { initPlayTab } from './playTab.js';
 import { initExportTab } from './exportTab.js';
 import { initHelpTab } from './helpTab.js';
+import { initDesktop } from './desktop.js';
 
 const STORAGE_KEY = 'ardustudio.project.v1';
 const HISTORY_LIMIT = 100;
@@ -165,3 +166,6 @@ refreshActive();
 
 // Expose for debugging & tests.
 window.__ardustudio = app;
+
+// Native menus and file dialogs when running in the desktop shell; no-op in a browser.
+initDesktop(app);

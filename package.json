@@ -1,0 +1,20 @@
+{
+  "name": "ardustudio",
+  "version": "1.0.0",
+  "description": "Visual game maker for the Arduboy FX-C",
+  "license": "MIT",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "build:offline": "node tools/build_offline.mjs",
+    "start:desktop": "npm run build:offline && electron .",
+    "package:win": "npm run build:offline && electron-packager . ArduStudio --platform=win32 --arch=x64 --out=out --overwrite --ignore=\"^/(node_modules|out|build-avr|docs|\\.git|\\.github)\"",
+    "package:linux": "npm run build:offline && electron-packager . ArduStudio --platform=linux --arch=x64 --out=out --overwrite --ignore=\"^/(node_modules|out|build-avr|docs|\\.git|\\.github)\"",
+    "test": "node tools/test_runtime.mjs && node tools/check_codegen.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "^33.0.0",
+    "esbuild": "^0.24.0"
+  }
+}

@@ -1,2 +1,4 @@
 build-avr/
 node_modules/
+dist/
+out/

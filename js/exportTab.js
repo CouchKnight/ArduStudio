@@ -4,6 +4,7 @@
 import { el, clear, download } from './ui.js';
 import { makeProject, makeDemoProject, normalizeProject } from './model.js';
 import { generateIno } from './codegen.js';
+import { isDesktop, saveProjectNative, openProjectNative, exportSketchNative } from './desktop.js';
 
 export function initExportTab(app) {
   const nameInput = document.getElementById('expName');
@@ -38,7 +39,10 @@ export function initExportTab(app) {
     }
   }
 
-  document.getElementById('expIno').addEventListener('click', () => {
+  // In the desktop app these use real OS dialogs; in a browser they fall back
+  // to a download / file-picker.
+  document.getElementById('expIno').addEventListener('click', async () => {
+    if (isDesktop()) { await exportSketchNative(app); tryGenerate(); return; }
     const ino = tryGenerate();
     if (ino) download(sketchFilename(), ino, 'text/x-arduino');
   });
@@ -49,13 +53,17 @@ export function initExportTab(app) {
     try { await navigator.clipboard.writeText(ino); } catch { /* clipboard blocked */ }
   });
 
-  document.getElementById('expSave').addEventListener('click', () => {
+  document.getElementById('expSave').addEventListener('click', async () => {
+    if (isDesktop()) { await saveProjectNative(app, true); return; }
     const base = (app.project.name || 'project').replace(/[^A-Za-z0-9_-]+/g, '_');
     download(base + '.ardustudio.json', JSON.stringify(app.project, null, 2), 'application/json');
   });
 
   const loadFile = document.getElementById('expLoadFile');
-  document.getElementById('expLoad').addEventListener('click', () => loadFile.click());
+  document.getElementById('expLoad').addEventListener('click', async () => {
+    if (isDesktop()) { await openProjectNative(app); return; }
+    loadFile.click();
+  });
   loadFile.addEventListener('change', () => {
     const f = loadFile.files && loadFile.files[0];
     if (!f) return;

@@ -7,7 +7,6 @@ import { SCENE_W, SCENE_H, TILE } from './model.js';
 import {
   OP, NO_SCRIPT,
   MENU_LAST_IS_ZERO, MENU_CANCEL_B, MENU_LAYOUT_DIALOGUE,
-  ATTACH_OVERRIDE, NUM_BUTTONS,
 } from './compiler.js';
 import { FONT5X7 } from './font5x7.js';
 
@@ -53,7 +52,7 @@ export class Emulator {
 
   reset() {
     this.vars = new Uint8Array(32);
-    this.script = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0 };
+    this.script = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1 };
     this.text = null; // { str, pageStart, shown }
     this.menu = null; // { varIdx, count, labels, sel, flags }
     // RGB LED, mirroring Arduboy2's setRGBled / digitalWriteRGB.
@@ -61,10 +60,6 @@ export class Emulator {
     this.armedTrigger = -1;
     this.frame = 0;
     this.song = { idx: -1, pos: 0, framesLeft: 0, loop: false };
-    // Scripts attached to buttons persist across scene changes until removed.
-    // Bytecode button order: 0=LEFT 1=RIGHT 2=UP 3=DOWN 4=A 5=B.
-    this.buttonScript = new Array(NUM_BUTTONS).fill(NO_SCRIPT);
-    this.buttonOverride = 0;
     this.camX = 0; this.camY = 0;
     this.player = { px: this.g.startX * TILE, py: this.g.startY * TILE, tx: 0, ty: 0, moving: false, fx: 0, fy: 1, frame: 0, anim: 0 };
     this.loadScene(this.g.startScene, this.g.startX, this.g.startY, true);
@@ -88,9 +83,6 @@ export class Emulator {
     this.overrides = [];          // SET_TILE lands here, like the C++ RAM table
     this.actors = sc.actors.map((a) => ({
       def: a,
-      // Per-instance copy: `def` is the shared compiled scene object, so Set
-      // Actor Sprite must never write through it.
-      spriteIdx: a.spriteIdx,
       px: a.x * TILE, py: a.y * TILE,
       tx: a.x, ty: a.y,
       moving: false, hidden: false,
@@ -117,7 +109,6 @@ export class Emulator {
     this.script.self = selfActor;
     this.script.wait = 0;
     this.script.waitActor = -1;
-    this.script.waitInput = 0;
     this.text = null;
   }
 
@@ -227,11 +218,8 @@ export class Emulator {
     if (this.script.active) {
       this.runScript();
     } else {
-      // Default actions run first (with overridden buttons masked out), then
-      // any script attached to a button that was just pressed takes over.
       this.updatePlayer();
       this.checkTriggers();
-      if (!this.script.active) this.checkButtonScripts();
     }
     this.updateActors(!this.script.active);
     this.updateCamera();
@@ -247,32 +235,6 @@ export class Emulator {
     this.camY = Math.max(0, Math.min(maxY, this.player.py - (H / 2 - TILE / 2)));
   }
 
-  // Bit for a bytecode button index (0=LEFT 1=RIGHT 2=UP 3=DOWN 4=A 5=B).
-  buttonBit(idx) {
-    return [BTN.LEFT, BTN.RIGHT, BTN.UP, BTN.DOWN, BTN.A, BTN.B][idx];
-  }
-
-  // Buttons whose default game action has been replaced by a script.
-  overriddenMask() {
-    let mask = 0;
-    for (let i = 0; i < NUM_BUTTONS; i++) {
-      if (this.buttonScript[i] !== NO_SCRIPT && (this.buttonOverride & (1 << i))) {
-        mask |= this.buttonBit(i);
-      }
-    }
-    return mask;
-  }
-
-  checkButtonScripts() {
-    for (let i = 0; i < NUM_BUTTONS; i++) {
-      if (this.buttonScript[i] === NO_SCRIPT) continue;
-      if (this.justPressed(this.buttonBit(i))) {
-        this.startScript(this.buttonScript[i], 0xff);
-        return;
-      }
-    }
-  }
-
   updatePlayer() {
     const p = this.player;
     if (p.moving) {
@@ -284,15 +246,11 @@ export class Emulator {
       if (p.px === gx && p.py === gy) p.moving = false;
       return;
     }
-    // A button whose script overrides the default action no longer moves the
-    // player or interacts.
-    const blocked = this.overriddenMask();
-    const held = (b) => this.pressed(b) && !(blocked & b);
     let dx = 0, dy = 0;
-    if (held(BTN.LEFT)) dx = -1;
-    else if (held(BTN.RIGHT)) dx = 1;
-    else if (held(BTN.UP)) dy = -1;
-    else if (held(BTN.DOWN)) dy = 1;
+    if (this.pressed(BTN.LEFT)) dx = -1;
+    else if (this.pressed(BTN.RIGHT)) dx = 1;
+    else if (this.pressed(BTN.UP)) dy = -1;
+    else if (this.pressed(BTN.DOWN)) dy = 1;
 
     if (dx || dy) {
       p.fx = dx; p.fy = dy;
@@ -307,7 +265,7 @@ export class Emulator {
       }
     }
 
-    if (this.justPressed(BTN.A) && !(blocked & BTN.A)) {
+    if (this.justPressed(BTN.A)) {
       const fx = Math.round(p.px / TILE) + p.fx;
       const fy = Math.round(p.py / TILE) + p.fy;
       const ai = this.actorAt(fx, fy, -1);
@@ -340,9 +298,9 @@ export class Emulator {
     for (let i = 0; i < this.actors.length; i++) {
       const a = this.actors[i];
       if (a.hidden) continue;
-      if (a.def.animate && this.g.sprites[a.spriteIdx].frames.length > 1) {
+      if (a.def.animate && this.g.sprites[a.def.spriteIdx].frames.length > 1) {
         a.anim++;
-        if (a.anim >= ANIM_INTERVAL) { a.anim = 0; a.frame = (a.frame + 1) % this.g.sprites[a.spriteIdx].frames.length; }
+        if (a.anim >= ANIM_INTERVAL) { a.anim = 0; a.frame = (a.frame + 1) % this.g.sprites[a.def.spriteIdx].frames.length; }
       }
       // A scripted Move Actor walks even while the script runs, straight to
       // its target (x first, then y), ignoring collisions.
@@ -393,16 +351,6 @@ export class Emulator {
       const a = this.actors[s.waitActor];
       if (a && a.scriptMove) return; // still walking
       s.waitActor = -1;
-    }
-    if (s.waitInput) {
-      // Blocked until one of the requested buttons is pressed.
-      let hit = 0;
-      for (let i = 0; i < NUM_BUTTONS; i++) {
-        const bit = this.buttonBit(i);
-        if ((s.waitInput & bit) && this.justPressed(bit)) { hit = bit; break; }
-      }
-      if (!hit) return;
-      s.waitInput = 0;
     }
     if (this.menu) { this.updateMenu(); return; }
     if (this.text) { this.updateText(); return; }
@@ -520,48 +468,6 @@ export class Emulator {
           this.led = mode === 1
             ? { mode: 'digital', r: r ? 255 : 0, g: g ? 255 : 0, b: b ? 255 : 0 }
             : { mode: 'analog', r, g, b };
-          break;
-        }
-        case OP.SET_ACTOR_SPRITE: {
-          let idx = code[s.pc++];
-          const spriteIdx = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          if (idx < this.actors.length) {
-            const a = this.actors[idx];
-            a.spriteIdx = spriteIdx;
-            // The new sprite may have fewer frames than the old one.
-            const frames = this.g.sprites[spriteIdx].frames.length;
-            if (a.frame >= frames) a.frame = 0;
-          }
-          break;
-        }
-        case OP.ATTACH_SCRIPT: {
-          const btn = code[s.pc++];
-          const flags = code[s.pc++];
-          const scriptIdx = code[s.pc++];
-          if (btn < NUM_BUTTONS) {
-            this.buttonScript[btn] = scriptIdx;
-            if (flags & ATTACH_OVERRIDE) this.buttonOverride |= 1 << btn;
-            else this.buttonOverride &= ~(1 << btn);
-          }
-          break;
-        }
-        case OP.REMOVE_BUTTON_SCRIPT: {
-          const btn = code[s.pc++];
-          if (btn < NUM_BUTTONS) {
-            this.buttonScript[btn] = NO_SCRIPT;
-            this.buttonOverride &= ~(1 << btn);
-          }
-          break;
-        }
-        case OP.WAIT_INPUT:
-          s.waitInput = code[s.pc++];
-          return; // block until one of them is pressed
-        case OP.IF_INPUT: {
-          const mask = code[s.pc++];
-          const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
-          // Held right now — this checks once and never waits.
-          if (!this.pressed(mask)) s.pc = elseAddr;
           break;
         }
         case OP.MENU: {
@@ -738,7 +644,7 @@ export class Emulator {
     }
     for (const a of this.actors) {
       if (a.hidden) continue;
-      const spr = this.g.sprites[a.spriteIdx];
+      const spr = this.g.sprites[a.def.spriteIdx];
       const f = spr.frames[Math.min(a.frame, spr.frames.length - 1)];
       this.drawBytesMasked(Math.round(a.px) - this.camX, Math.round(a.py) - this.camY, f, spr.width, spr.height);
     }

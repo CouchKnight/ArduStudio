@@ -2,7 +2,7 @@
 // Renders an editable list of event cards; IF blocks nest recursively.
 
 import { el, clear } from './ui.js';
-import { makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS } from './model.js';
+import { makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS } from './model.js';
 
 const CMP_OPTIONS = ['==', '!=', '<', '>', '<=', '>='];
 
@@ -25,35 +25,6 @@ function addEventSelect(onAdd) {
     sel.value = '';
   });
   return sel;
-}
-
-// A single-choice grid of the Arduboy's six buttons (no Start/Select).
-function buttonPicker(selected, onPick) {
-  const row = el('div', { class: 'button-picker' });
-  for (const b of BUTTONS) {
-    row.append(el('button', {
-      class: 'btn-key' + (selected === b.key ? ' active' : ''),
-      type: 'button',
-      title: b.key.toUpperCase(),
-      onclick: () => onPick(b.key),
-    }, b.label));
-  }
-  return row;
-}
-
-// A multi-select "Any of" grid returning a button bitmask.
-function buttonChecks(mask, onChange) {
-  const row = el('div', { class: 'button-picker' });
-  for (const b of BUTTONS) {
-    const on = (mask & b.bit) !== 0;
-    row.append(el('button', {
-      class: 'btn-key' + (on ? ' active' : ''),
-      type: 'button',
-      title: b.key.toUpperCase(),
-      onclick: () => onChange(on ? (mask & ~b.bit) : (mask | b.bit)),
-    }, b.label));
-  }
-  return row;
 }
 
 function labelFor(type) {
@@ -249,59 +220,6 @@ function renderEventCard(app, scene, list, index, rerender) {
     case 'DELETE_SAVE':
       fields.append(el('span', { class: 'hint' }, 'Erases the saved game.'));
       break;
-    case 'SET_ACTOR_SPRITE': {
-      const sel = el('select', { onchange: () => { ev.target = sel.value; changed(); } });
-      sel.append(el('option', { value: 'self', selected: ev.target === 'self' }, 'Self (this actor)'));
-      if (scene) {
-        for (const a of scene.actors) {
-          sel.append(el('option', { value: a.id, selected: ev.target === a.id }, a.name));
-        }
-      }
-      fields.append(el('label', {}, 'Actor', sel));
-      const sprSel = el('select', { onchange: () => { ev.spriteId = sprSel.value; changed(); } });
-      sprSel.append(el('option', { value: '' }, '(pick sprite)'));
-      for (const s of project.sprites) {
-        sprSel.append(el('option', { value: s.id, selected: ev.spriteId === s.id }, s.name));
-      }
-      fields.append(el('label', {}, 'Sprite', sprSel));
-      break;
-    }
-    case 'ATTACH_SCRIPT': {
-      fields.append(el('label', { style: 'flex-basis:100%' }, 'Button',
-        buttonPicker(ev.button, (key) => { ev.button = key; changed(); rerender(); })));
-      fields.append(el('label', { style: 'flex-basis:100%' }, el('input', {
-        type: 'checkbox', checked: ev.override,
-        onchange: (e) => { ev.override = e.target.checked; changed(); },
-      }), ' Override default button action'));
-      card.append(el('div', { class: 'event-branch-label' }, 'On press'));
-      card.append(renderScriptEditor(app, scene, ev.script, app.save));
-      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
-        'Runs whenever the button is pressed, and stays attached across scenes until removed. '
-        + 'Without override the button also keeps its normal action.'));
-      break;
-    }
-    case 'REMOVE_BUTTON_SCRIPT':
-      fields.append(el('label', { style: 'flex-basis:100%' }, 'Remove script attached to input',
-        buttonPicker(ev.button, (key) => { ev.button = key; changed(); rerender(); })));
-      break;
-    case 'WAIT_INPUT':
-      fields.append(el('label', { style: 'flex-basis:100%' }, 'Any of',
-        buttonChecks(ev.mask, (mask) => { ev.mask = mask; changed(); rerender(); })));
-      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
-        'The script pauses here until one of these buttons is pressed.'));
-      break;
-    case 'IF_INPUT': {
-      fields.append(el('label', { style: 'flex-basis:100%' }, 'Any of',
-        buttonChecks(ev.mask, (mask) => { ev.mask = mask; changed(); rerender(); })));
-      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
-        'Checks buttons held right now and continues immediately — it never waits. '
-        + 'To react every time a button is pressed, use Attach Script To Button.'));
-      card.append(el('div', { class: 'event-branch-label' }, 'True'));
-      card.append(renderScriptEditor(app, scene, ev.then, app.save));
-      card.append(el('div', { class: 'event-branch-label' }, 'False'));
-      card.append(renderScriptEditor(app, scene, ev.else, app.save));
-      break;
-    }
     case 'SET_LED': {
       const modeSel = el('select', {
         onchange: () => { ev.mode = modeSel.value; changed(); rerender(); },

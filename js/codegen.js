@@ -234,46 +234,6 @@ bool menuActive = false;
 uint8_t menuVar = 0, menuCount = 0, menuFlags = 0, menuSel = 0;
 const char* menuLabels[MAX_MENU_OPTIONS];
 
-// Buttons. The bytecode uses a portable mask (bit0=LEFT .. bit5=B); Arduboy2's
-// own constants have a different bit layout that also varies by board variant,
-// so always translate through this table rather than hardcoding values.
-#define NUM_BUTTONS 6
-#define ATTACH_OVERRIDE 1
-const uint8_t buttonBits[NUM_BUTTONS] PROGMEM = {
-  LEFT_BUTTON, RIGHT_BUTTON, UP_BUTTON, DOWN_BUTTON, A_BUTTON, B_BUTTON
-};
-// Scripts attached to buttons persist across scene changes until removed.
-uint8_t buttonScript[NUM_BUTTONS];
-uint8_t buttonOverride = 0;
-uint8_t scriptWaitInput = 0;
-
-uint8_t arduboyMask(uint8_t mask) {
-  uint8_t out = 0;
-  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
-    if (mask & (1 << i)) out |= pgm_read_byte(&buttonBits[i]);
-  }
-  return out;
-}
-
-// Arduboy2::justPressed() takes a single button, so "any of" checks loop.
-bool anyJustPressed(uint8_t mask) {
-  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
-    if ((mask & (1 << i)) && arduboy.justPressed(pgm_read_byte(&buttonBits[i]))) return true;
-  }
-  return false;
-}
-
-// Buttons whose default game action has been replaced by a script.
-uint8_t overriddenMask() {
-  uint8_t mask = 0;
-  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
-    if (buttonScript[i] != 0xFF && (buttonOverride & (1 << i))) {
-      mask |= pgm_read_byte(&buttonBits[i]);
-    }
-  }
-  return mask;
-}
-
 uint8_t codeAt(uint16_t pc) { return pgm_read_byte(&scriptCode[pc]); }
 
 uint8_t tileAt(uint8_t x, uint8_t y) {
@@ -356,7 +316,6 @@ void startScript(uint16_t scriptIdx, uint8_t selfActor) {
   scriptSelf = selfActor;
   scriptWait = 0;
   scriptWaitActor = -1;
-  scriptWaitInput = 0;
   textStr = nullptr;
 }
 
@@ -520,10 +479,6 @@ void runScript() {
     if (actors[scriptWaitActor].scriptMove) return; // still walking
     scriptWaitActor = -1;
   }
-  if (scriptWaitInput) {
-    if (!anyJustPressed(scriptWaitInput)) return; // blocked until pressed
-    scriptWaitInput = 0;
-  }
   if (menuActive) { updateMenu(); return; }
   if (textStr != nullptr) { updateText(); return; }
   uint16_t guard = 0;
@@ -682,49 +637,6 @@ void runScript() {
         }
         break;
       }
-      case 22: { // SET_ACTOR_SPRITE
-        uint8_t idx = codeAt(scriptPC++);
-        uint8_t spriteIdx = codeAt(scriptPC++);
-        if (idx == 0xFF) idx = scriptSelf;
-        if (idx < actorCount) {
-          actors[idx].def.spriteIdx = spriteIdx;
-          // The new sprite may have fewer frames than the old one.
-          if (actors[idx].frame >= pgm_read_byte(&spriteFrameCount[spriteIdx])) {
-            actors[idx].frame = 0;
-          }
-        }
-        break;
-      }
-      case 23: { // ATTACH_SCRIPT
-        uint8_t btn = codeAt(scriptPC++);
-        uint8_t flags = codeAt(scriptPC++);
-        uint8_t idx = codeAt(scriptPC++);
-        if (btn < NUM_BUTTONS) {
-          buttonScript[btn] = idx;
-          if (flags & ATTACH_OVERRIDE) buttonOverride |= (1 << btn);
-          else buttonOverride &= ~(1 << btn);
-        }
-        break;
-      }
-      case 24: { // REMOVE_BUTTON_SCRIPT
-        uint8_t btn = codeAt(scriptPC++);
-        if (btn < NUM_BUTTONS) {
-          buttonScript[btn] = 0xFF;
-          buttonOverride &= ~(1 << btn);
-        }
-        break;
-      }
-      case 25: // WAIT_INPUT
-        scriptWaitInput = codeAt(scriptPC++);
-        return; // block until one of them is pressed
-      case 26: { // IF_INPUT
-        uint8_t mask = codeAt(scriptPC++);
-        uint16_t elseAddr = codeAt(scriptPC) | ((uint16_t)codeAt(scriptPC + 1) << 8);
-        scriptPC += 2;
-        // Held right now — this checks once and never waits.
-        if (!arduboy.pressed(arduboyMask(mask))) scriptPC = elseAddr;
-        break;
-      }
       case 21: { // MENU
         menuVar = codeAt(scriptPC++);
         menuCount = codeAt(scriptPC++);
@@ -759,14 +671,11 @@ void updatePlayer() {
     if (player.px == gx && player.py == gy) player.moving = false;
     return;
   }
-  // A button whose script overrides the default action no longer moves the
-  // player or interacts.
-  uint8_t blocked = overriddenMask();
   int8_t dx = 0, dy = 0;
-  if (arduboy.pressed(LEFT_BUTTON) && !(blocked & LEFT_BUTTON)) dx = -1;
-  else if (arduboy.pressed(RIGHT_BUTTON) && !(blocked & RIGHT_BUTTON)) dx = 1;
-  else if (arduboy.pressed(UP_BUTTON) && !(blocked & UP_BUTTON)) dy = -1;
-  else if (arduboy.pressed(DOWN_BUTTON) && !(blocked & DOWN_BUTTON)) dy = 1;
+  if (arduboy.pressed(LEFT_BUTTON)) dx = -1;
+  else if (arduboy.pressed(RIGHT_BUTTON)) dx = 1;
+  else if (arduboy.pressed(UP_BUTTON)) dy = -1;
+  else if (arduboy.pressed(DOWN_BUTTON)) dy = 1;
 
   int8_t cx = (player.px + TILE_PX / 2) / TILE_PX;
   int8_t cy = (player.py + TILE_PX / 2) / TILE_PX;
@@ -782,7 +691,7 @@ void updatePlayer() {
     }
   }
 
-  if (arduboy.justPressed(A_BUTTON) && !(blocked & A_BUTTON)) {
+  if (arduboy.justPressed(A_BUTTON)) {
     int8_t ai = actorAt(cx + player.fx, cy + player.fy, -1);
     if (ai >= 0 && actors[ai].def.script != NO_SCRIPT) {
       startScript(actors[ai].def.script, ai);
@@ -805,16 +714,6 @@ void checkTriggers() {
     armedTrigger = hit;
     memcpy_P(&t, &curScene.triggers[hit], sizeof(TriggerDef));
     if (t.script != NO_SCRIPT) startScript(t.script, 0xFF);
-  }
-}
-
-void checkButtonScripts() {
-  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
-    if (buttonScript[i] == 0xFF) continue;
-    if (arduboy.justPressed(pgm_read_byte(&buttonBits[i]))) {
-      startScript(buttonScript[i], 0xFF);
-      return;
-    }
   }
 }
 
@@ -934,7 +833,6 @@ void setup() {
   arduboy.setFrameRate(60);
   arduboy.initRandomSeed();
   for (uint8_t i = 0; i < NUM_VARS; i++) vars[i] = 0;
-  for (uint8_t i = 0; i < NUM_BUTTONS; i++) buttonScript[i] = 0xFF;
   player.fx = 0; player.fy = 1;
   player.frame = 0; player.anim = 0;
   loadScene(START_SCENE, START_X, START_Y, true);
@@ -953,11 +851,8 @@ void loop() {
   if (scriptActive) {
     runScript();
   } else {
-    // Default actions run first (with overridden buttons masked out), then any
-    // script attached to a button that was just pressed takes over.
     updatePlayer();
     checkTriggers();
-    if (!scriptActive) checkButtonScripts();
   }
   updateActors(!scriptActive);
   updateCamera();

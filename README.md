@@ -8,16 +8,34 @@ the hardware.
 
 ![Scene editor](docs/shot_actor.png)
 
-No installation, no build step, no dependencies: it's a static web app.
+### Three ways to run it
+
+**1. Portable single file (offline, no install).** Build `dist/ArduStudio.html` — the whole
+app in one ~210 KB file. Double-click it; it works offline in any browser, makes zero network
+requests, and needs no server:
 
 ```bash
-# from the repo root — any static file server works
-npx http-server .        # then open http://localhost:8080
-# or: python3 -m http.server
+npm install && npm run build:offline    # → dist/ArduStudio.html
 ```
 
-> Opening `index.html` directly with `file://` won't work in most browsers because the app uses
-> ES modules — serve the folder instead (two keystrokes with `npx http-server`).
+**2. Desktop app** with a native File menu and OS Open/Save dialogs:
+
+```bash
+npm run start:desktop      # run it
+npm run package:win        # → out/ArduStudio-win32-x64/ArduStudio.exe
+npm run package:linux      # → out/ArduStudio-linux-x64/ArduStudio
+```
+
+**3. From source, served.** No build step, no dependencies:
+
+```bash
+npx http-server .          # then open http://localhost:8080
+```
+
+> Opening the *source* `index.html` directly with `file://` won't work: the sources are ES
+> modules, and browsers block module scripts over `file://`. That is exactly what
+> `build:offline` solves — it bundles everything into one classic script. Use
+> `dist/ArduStudio.html` when you want a file you can just double-click.
 
 The app boots with **Key Quest**, a complete little demo adventure (dialogue, branching, variables,
 item fetching, tile swapping, music, a scripted actor move, and a two-screen scrolling lake). Play it
@@ -44,10 +62,7 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 `Show Dialogue` (auto word-wrapped, paged), `Display Menu` (2–8 options, two layouts,
 optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add Variable`,
 `Change Scene`, `Teleport Player`, `Set Tile` (open doors, reveal passages), `Hide / Show Actor`,
-`Move Actor` (walks and blocks the script until it arrives, or teleports),
-`Set Actor Sprite`, `Attach Script To Button` (with optional override of the default
-action), `Remove Button Script`, `Pause Script Until Input Pressed`,
-`If Joypad Input Held`, `Play Tone`,
+`Move Actor` (walks and blocks the script until it arrives, or teleports), `Play Tone`,
 `Play / Stop Song`, `Set RGB LED` (analog PWM or digital on/off), `Save Game`, `Load Game`,
 `Save Exists → Var`, `Delete Save`, `Wait`, `Stop Script`. Scripts attach to actors
 (on interact), triggers (on enter) and scenes (on enter).
@@ -62,7 +77,6 @@ action), `Remove Button Script`, `Pause Script Until Input Pressed`,
 - 32 byte-sized variables drive all game logic.
 - Music and SFX via **ArduboyTones**, with looping background tracks.
 - Menus and yes/no prompts that write the player's answer into a variable.
-- Scripts attachable to any of the six buttons, optionally replacing the default action.
 - RGB LED feedback, analog (PWM brightness) or digital (on/off).
 - Save games in EEPROM — variables, current scene and player position, surviving power-off.
 
@@ -95,6 +109,10 @@ js/emulator.js            browser play-test runtime (Arduboy twin)
 js/codegen.js             .ino generator (data + C++ engine)
 js/font5x7.js             Arduboy2's font, extracted for pixel-identical text
 js/*.js                   editor panels (scene, pixel, script, audio, variables, image, play, export)
+desktop/main.cjs          Electron main process (window, menu, native dialogs)
+desktop/preload.cjs       contextBridge exposing a minimal native API
+js/desktop.js             renderer side of the desktop bridge (no-op in a browser)
+tools/build_offline.mjs   bundles everything into one self-contained HTML file
 tools/check_codegen.mjs   g++ syntax check of generated sketches (stub headers)
 tools/test_runtime.mjs    scripted full playthrough of the demo in the emulator
 tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
@@ -103,14 +121,33 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 102 assertions: playthrough, camera, saves, songs, menus, LED, input
+node tools/test_runtime.mjs     # 79 assertions: playthrough plus camera, saves, songs, menus, LED
 node tools/check_codegen.mjs    # generated sketches pass g++ -Wall -Wextra
 tools/build_avr.sh              # optional: full ATmega32u4 build (needs gcc-avr, avr-libc)
 ```
 
 The AVR build compiles the generated sketch against the unmodified Arduboy2 and ArduboyTones
-libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 20,332 bytes
-flash / 1,713 bytes RAM.
+libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 19,610 bytes
+flash / 1,705 bytes RAM.
+
+## Offline / desktop builds
+
+`tools/build_offline.mjs` uses esbuild to bundle the ES-module sources into a single IIFE and
+inlines it, plus the CSS, into one HTML file. The desktop app loads that same bundled file
+rather than `index.html` — which sidesteps the ES-module-over-`file://` restriction entirely
+and guarantees the desktop and portable builds run identical code.
+
+In the desktop app, **File → New / Open / Save / Save As / Export .ino** use real OS dialogs
+and the window title shows the open project. The same buttons in the Export tab route to
+native dialogs on the desktop and fall back to browser download/upload elsewhere, so one
+codebase serves both.
+
+Notes on the packaged apps:
+
+- They are ~265 MB unpacked. That is Electron's floor, not ArduStudio — the app itself is
+  210 KB. If size matters, use the portable HTML.
+- The Windows `.exe` is unsigned, so SmartScreen shows a one-time
+  *"More info → Run anyway"*. Signing needs a certificate.
 
 ## Editing
 
@@ -122,7 +159,6 @@ localStorage and can be saved to / loaded from JSON files.
 
 64 tiles · 32 sprites × 4 frames · 8 actors + 8 triggers per scene · 32 variables ·
 32 songs × 192 notes · 256 dialogue strings · 8 options per menu (~9 chars each) ·
-6 buttons with one attached script each ·
 scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene.
 
 Roadmap ideas: ArduboyFX data export for asset-heavy games, multiple save slots, `.arduboy` package
