@@ -215,6 +215,11 @@ canvas { image-rendering: pixelated; }
 .frame-tabs button { padding: 2px 8px; }
 .frame-tabs button.active { background: #14405c; border-color: var(--accent); }
 .preview-box { background: var(--screen-off); border: 1px solid var(--border); border-radius: 4px; padding: 8px; width: fit-content; }
+/* The animation state the sprite preview is playing. */
+.form-row.state-active { background: #14405c; border-radius: 5px; padding: 2px 4px; }
+/* An expression the compiler cannot parse. */
+input.bad { border-color: var(--danger); }
+.warn-text { color: var(--warn); }
 
 /* play tab */
 .play-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }

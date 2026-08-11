@@ -49,14 +49,22 @@ done
 # EEPROM.h lives in the core's libraries dir; the sketch includes it directly.
 fetch "$CORE_URL/libraries/EEPROM/src/EEPROM.h" "$OUT/tones/EEPROM.h"
 
-echo "== generating sketch from demo project =="
-node -e "
-import('$ROOT/js/model.js').then(async (model) => {
-  const codegen = await import('$ROOT/js/codegen.js');
-  const { ino } = codegen.generateIno(model.makeDemoProject());
-  require('fs').writeFileSync('$OUT/sketch.cpp', ino);
-  console.log('sketch.cpp written:', ino.length, 'chars');
-});"
+# Engine subsystems are stripped from the sketch when a game does not use them,
+# so the interesting figure depends on the project. PROJECT=all-features builds
+# one that uses every subsystem at once — the worst case a game can hit.
+PROJECT="${PROJECT:-demo}"
+echo "== generating sketch from $PROJECT project =="
+node --input-type=module -e "
+import { makeDemoProject } from '$ROOT/js/model.js';
+import { generateIno } from '$ROOT/js/codegen.js';
+import { writeFileSync } from 'node:fs';
+const project = '$PROJECT' === 'all-features'
+  ? (await import('$ROOT/tools/all_features_project.mjs')).makeAllFeaturesProject()
+  : makeDemoProject();
+const { ino } = generateIno(project);
+writeFileSync('$OUT/sketch.cpp', ino);
+console.log('sketch.cpp written:', ino.length, 'chars');
+"
 
 echo "== compiling for ATmega32u4 =="
 CFLAGS="-c -g -Os -w -ffunction-sections -fdata-sections -mmcu=atmega32u4 \

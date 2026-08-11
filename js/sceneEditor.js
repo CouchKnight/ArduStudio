@@ -526,7 +526,10 @@ export function initSceneEditor(app) {
     const slot = slots.find((s) => s.key === active);
     return el('div', {}, strip,
       el('p', { class: 'hint' }, slot.hint),
-      renderScriptEditor(app, sc, entity.scripts[active], app.save));
+      // The owning actor lets Set Actor Animation State list the right sprite's
+      // states for a "Self" target.
+      renderScriptEditor(app, sc, entity.scripts[active], app.save,
+        sc.actors.includes(entity) ? entity : null));
   }
 
   function refresh() {

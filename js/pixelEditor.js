@@ -2,8 +2,8 @@
 
 import { el, clear, drawPixelsToCanvas } from './ui.js';
 import {
-  makeTile, makeSprite, blankPixels, getPixel, setPixel,
-  MAX_TILES, MAX_SPRITES, MAX_FRAMES, sceneScripts, forEachEvent,
+  makeTile, makeSprite, makeSpriteState, blankPixels, getPixel, setPixel,
+  MAX_TILES, MAX_SPRITES, MAX_FRAMES, MAX_SPRITE_STATES, sceneScripts, forEachEvent,
 } from './model.js';
 
 const EDIT_SCALE = 28;
@@ -195,6 +195,7 @@ export function initTileEditor(app) {
 export function initSpriteEditor(app) {
   let selected = 0;
   let frame = 0;
+  let stateIdx = 0; // which animation state the preview is playing
 
   function refresh() {
     frame = 0;
@@ -221,19 +222,84 @@ export function initSpriteEditor(app) {
     });
   }
 
+  // Named frame ranges an actor can play, e.g. Idle = 0-1, Walk = 2-3. Every
+  // sprite has a Default state, so Set Actor Animation State always has
+  // something to offer.
+  function statesPanel(spr) {
+    const last = spr.frames.length - 1;
+    const rows = el('div', {});
+    spr.states.forEach((st, i) => {
+      const range = (key) => el('input', {
+        type: 'number', min: 0, max: last, value: st[key],
+        style: 'width:52px',
+        onchange: (e) => {
+          st[key] = Math.max(0, Math.min(last, parseInt(e.target.value, 10) || 0));
+          if (st.to < st.from) st.to = st.from;
+          app.save();
+          renderEditor();
+        },
+      });
+      rows.append(el('div', {
+        class: 'form-row' + (i === stateIdx ? ' state-active' : ''),
+        onclick: () => { stateIdx = i; renderEditor(); },
+      },
+        el('input', {
+          type: 'text', value: st.name, style: 'width:88px',
+          onchange: (e) => { st.name = e.target.value || 'State'; app.save(); renderEditor(); },
+        }),
+        el('label', {}, 'from', range('from')),
+        el('label', {}, 'to', range('to')),
+        el('button', {
+          class: 'mini', title: spr.states.length > 1 ? 'Delete state' : 'A sprite needs at least one state',
+          disabled: spr.states.length <= 1,
+          onclick: (e) => {
+            e.stopPropagation();
+            spr.states.splice(i, 1);
+            stateIdx = Math.max(0, stateIdx - 1);
+            app.save();
+            renderEditor();
+          },
+        }, '✕'),
+      ));
+    });
+    if (spr.states.length < MAX_SPRITE_STATES) {
+      rows.append(el('button', {
+        class: 'mini',
+        onclick: () => {
+          spr.states.push(makeSpriteState(`State ${spr.states.length + 1}`, 0, last));
+          stateIdx = spr.states.length - 1;
+          app.save();
+          renderEditor();
+        },
+      }, '＋ Add state'));
+    }
+    return el('div', {},
+      el('div', { class: 'hint' }, 'Animation states'),
+      rows,
+      el('p', { class: 'hint' }, 'A named range of frames that Set Actor Animation State can select.'));
+  }
+
   function renderEditor() {
     const box = clear(document.getElementById('spriteEditor'));
     const spr = app.project.sprites[selected];
     if (!spr) return;
     if (frame >= spr.frames.length) frame = 0;
 
+    // The preview plays whichever state is selected, so a range can be checked
+    // without leaving the tab.
+    if (stateIdx >= spr.states.length) stateIdx = 0;
+    const state = spr.states[stateIdx];
     const preview = document.createElement('canvas');
-    let previewFrame = 0;
-    const redrawPreview = () => drawPixelsToCanvas(preview, spr.frames[previewFrame % spr.frames.length], spr.width, spr.height, 6);
+    let previewStep = 0;
+    const redrawPreview = () => {
+      const span = state.to - state.from + 1;
+      const f = state.from + (previewStep % span);
+      drawPixelsToCanvas(preview, spr.frames[Math.min(f, spr.frames.length - 1)], spr.width, spr.height, 6);
+    };
     if (app._sprAnim) clearInterval(app._sprAnim);
     app._sprAnim = setInterval(() => {
       if (!document.getElementById('spriteEditor').contains(preview)) { clearInterval(app._sprAnim); return; }
-      previewFrame++;
+      previewStep++;
       redrawPreview();
     }, 333);
 
@@ -255,7 +321,17 @@ export function initSpriteEditor(app) {
     if (spr.frames.length > 1) {
       frameTabs.append(el('button', {
         class: 'mini', title: 'Delete current frame',
-        onclick: () => { spr.frames.splice(frame, 1); frame = Math.max(0, frame - 1); app.save(); renderEditor(); },
+        onclick: () => {
+          spr.frames.splice(frame, 1);
+          frame = Math.max(0, frame - 1);
+          const last = spr.frames.length - 1;
+          for (const st of spr.states) {
+            st.from = Math.min(st.from, last);
+            st.to = Math.min(st.to, last);
+          }
+          app.save();
+          renderEditor();
+        },
       }, '－'));
     }
 
@@ -280,7 +356,8 @@ export function initSpriteEditor(app) {
       el('label', {}, 'Size ', sizeSel),
       frameTabs,
       transformButtons(() => spr.frames[frame], spr.width, spr.height, () => { app.save(); grid.draw(); renderList(); }),
-      el('div', {}, el('div', { class: 'hint' }, 'Animation preview'), el('div', { class: 'preview-box' }, preview)),
+      statesPanel(spr),
+      el('div', {}, el('div', { class: 'hint' }, `Preview — ${state.name}`), el('div', { class: 'preview-box' }, preview)),
       el('button', {
         class: 'btn danger', onclick: () => {
           if (app.project.sprites.length <= 1) { alert('Need at least one sprite'); return; }

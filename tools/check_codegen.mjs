@@ -12,14 +12,22 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 import { makeDemoProject, makeProject } from '../js/model.js';
+import { makeAllFeaturesProject } from './all_features_project.mjs';
 import { generateIno } from '../js/codegen.js';
+
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const work = mkdtempSync(join(tmpdir(), 'ardustudio-'));
 
 let failed = false;
 
-for (const [label, project] of [['demo', makeDemoProject()], ['blank', makeProject()]]) {
+const projects = [
+  ['demo', makeDemoProject()],
+  ['blank', makeProject()],
+  ['all-features', makeAllFeaturesProject()],
+];
+
+for (const [label, project] of projects) {
   const { ino, warnings } = generateIno(project);
   if (warnings.length) console.log(`[${label}] compiler warnings:\n  ${warnings.join('\n  ')}`);
   const cpp = join(work, `${label}.cpp`);

@@ -197,6 +197,72 @@ key pickup does. The Play tab shows a live LED dot beside the screen.</p>
 use <b>🗑 Wipe save</b> on the Play tab to test a fresh start. Note that scene changes made with
 <b>Set Tile</b> are <i>not</i> saved; drive anything that must persist from a variable.</p>
 
+<h2>Math expressions</h2>
+<p>Two events in <b>Control Flow</b> take an expression rather than a single comparison:
+<b>If Math Expression</b> branches on it, and <b>Loop While Math Expression</b> repeats a
+block for as long as it stays true. Anything non-zero counts as true.</p>
+<table>
+  <tr><td>Variables</td><td><code>$health</code> — the name from the Variables tab</td></tr>
+  <tr><td>Arithmetic</td><td><code>+ - * / %</code>, unary <code>-</code>, and parentheses</td></tr>
+  <tr><td>Comparison</td><td><code>== != &lt; &gt; &lt;= &gt;=</code></td></tr>
+  <tr><td>Logic</td><td><code>&amp;&amp; || !</code></td></tr>
+  <tr><td>Functions</td><td><code>min(a,b)</code> <code>max(a,b)</code> <code>abs(a)</code> <code>rnd(n)</code> — a random number from 0 to n−1</td></tr>
+</table>
+<p>The whole expression is worked out when you export, so the Arduboy never parses anything —
+it just runs the finished sum. Maths is done in 16-bit signed integers, so intermediate values
+up to ±32767 are safe even though variables themselves only hold 0–255; dividing by zero gives
+0 rather than crashing. The editor checks as you type and tells you what is wrong.</p>
+<p class="hint">A loop whose condition never becomes false will stall that script — the game
+keeps drawing and the screen keeps updating, but the script stops making progress. Make sure
+something inside the loop changes what the condition tests. For that reason a loop is not
+allowed in an <b>On Update</b> script at all.</p>
+
+<h2>Switch</h2>
+<p><b>Switch</b> compares one variable against up to eight values and runs the matching block,
+or the <i>Else</i> block if none match. It is the tidy way to write a state machine — far
+easier to read than a stack of nested <code>If Variable</code> blocks.</p>
+
+<h2>Randomness</h2>
+<p><code>rnd(n)</code> in an expression gives you a random number, and actors set to
+<i>Wander</i> move randomly. Both come from the same generator, which starts from the same
+place every time the Arduboy powers on — so without help, every playthrough would roll exactly
+the same numbers. <b>Seed Random Number Generator</b> fixes that: run it in response to a
+button press (a title screen's "press A to start" is the classic spot) and the timing of that
+press seeds the generator.</p>
+
+<h2>Sprite animation states</h2>
+<p>A sprite's frames can be grouped into named <b>animation states</b> in the <b>Sprites</b>
+tab — <i>Idle</i> might be frames 0–1 and <i>Walk</i> frames 2–3. Every sprite starts with a
+<i>Default</i> state covering all its frames, and the preview plays whichever state you have
+selected.</p>
+<ul>
+  <li><b>Set Actor Animation State</b> — plays one of that sprite's states. Untick
+      <i>Loop animation</i> and it stops on the state's last frame instead of repeating.</li>
+  <li><b>Set Actor Animation Frame</b> — jumps straight to one frame.</li>
+  <li><b>Set Actor Animation Speed</b> — how many frames pass between animation steps, or
+      <i>None</i> to freeze the actor on its current frame.</li>
+</ul>
+
+<h2>The overlay</h2>
+<p>The overlay is a panel of solid black or white drawn over the game. Its corner sits at a
+tile position and it covers everything below and to the right of there, which is what makes it
+useful for status bars, shop windows and title screens.</p>
+<ul>
+  <li><b>Show Overlay</b> — choose black or white and where its corner goes. <code>0,8</code>
+      parks it just off the bottom of the screen, ready to slide up.</li>
+  <li><b>Overlay Move To</b> — slides it to a new corner at a chosen speed; the script waits
+      until it arrives.</li>
+  <li><b>Hide Overlay</b> — takes it away.</li>
+  <li><b>Set Overlay Scanline Cutoff</b> — the overlay and the dialogue box are only drawn
+      above this line. Use it to keep a band across the top of the screen; 64 means no cutoff.</li>
+  <li><b>Draw Text</b> — writes text at a pixel position, either on the <i>background</i>
+      (which scrolls with the scene) or on the <i>overlay</i> (which stays put on screen).
+      Four pieces of text can be live at once; drawing again at the same spot replaces the
+      text already there, so a score counter is free to update every frame.</li>
+</ul>
+<p class="hint">A status bar is <b>Show Overlay</b> at <code>0,0</code>, <b>Set Overlay
+Scanline Cutoff</b> at 16, then <b>Draw Text</b> on the overlay.</p>
+
 <h2>Asking about actors</h2>
 <p>Four events read an actor's state, and each of them can target the <b>player</b> as well as
 an actor in the scene.</p>
@@ -291,7 +357,14 @@ save games use the AVR's built-in EEPROM.</p>
   <tr><td>Projectiles</td><td>6 in flight at once</td></tr>
   <tr><td>Scene stack</td><td>8 pushed scenes deep</td></tr>
   <tr><td>Collision groups</td><td>3, plus the player</td></tr>
+  <tr><td>Animation states</td><td>4 per sprite</td></tr>
+  <tr><td>Switch options</td><td>8, plus Else</td></tr>
+  <tr><td>Drawn text</td><td>4 pieces on screen at once</td></tr>
 </table>
+<p class="hint">Your game only carries the engine features it actually uses: a game with no
+overlay has no overlay code in its sketch, and the same goes for projectiles, expressions,
+save games, music, menus, scene stack and fades. That is why the exported sketch grows as you
+reach for new kinds of event, and why using everything at once leaves the least room.</p>
 <p class="hint">The ATmega32u4 has ~28 KB of usable flash — roomy for dozens of scenes. The FX‑C's extra
 16 MB FX flash chip is not needed for ArduStudio games (that is where the 300-game library lives).</p>
 

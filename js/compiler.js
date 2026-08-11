@@ -11,6 +11,7 @@ import {
   directionCode, effectCode, collisionGroupCode,
   PROJECTILE_DIRS, PROJECTILE_DIR_SOURCE, ACTOR_SPEEDS,
 } from './model.js';
+import { compileExpression } from './expression.js';
 
 export const OP = {
   END: 0,
@@ -55,7 +56,45 @@ export const OP = {
   IF_ACTOR_DISTANCE: 37,
   STORE_ACTOR_DIR: 38, // actorIdx, varIdx
   STORE_ACTOR_POS: 39, // actorIdx, varXIdx, varYIdx
+  EXPR_IF: 40,      // exprLen, expr bytes…, elseAddrLo, elseAddrHi
+  EXPR_LOOP: 41,    // exprLen, expr bytes…, endAddrLo, endAddrHi
+  SEED_RNG: 42,
+  SWITCH: 43,       // varIdx, count, [value, addrLo, addrHi] × count, elseAddrLo, elseAddrHi
+  SET_ANIM_FRAME: 44, // actorIdx, frame
+  SET_ANIM_SPEED: 45, // actorIdx, speed (0 = frozen, else frames per step)
+  SET_ANIM_STATE: 46, // actorIdx, stateIdx, loop
+  SHOW_OVERLAY: 47, // fill (0 = black, 1 = white), x, y
+  HIDE_OVERLAY: 48,
+  OVERLAY_MOVE: 49, // x, y, speed
+  OVERLAY_CUTOFF: 50, // y scanline
+  DRAW_TEXT: 51,    // strIdx, x, y, location (0 = background, 1 = overlay)
 };
+
+// Animation speed: frames between animation steps. 0 freezes the actor.
+export const ANIM_SPEEDS = [
+  { value: 0, label: 'None (frozen)' },
+  { value: 5, label: 'Speed 1 (fastest)' },
+  { value: 10, label: 'Speed 2' },
+  { value: 20, label: 'Speed 3 (default)' },
+  { value: 40, label: 'Speed 4' },
+  { value: 80, label: 'Speed 5 (slowest)' },
+];
+
+// Overlay move speed in pixels per frame.
+export const OVERLAY_SPEEDS = [
+  { value: 0, label: 'Instant' },
+  { value: 1, label: 'Speed 1 (slowest)' },
+  { value: 2, label: 'Speed 2' },
+  { value: 4, label: 'Speed 3' },
+  { value: 8, label: 'Speed 4 (fastest)' },
+];
+
+export const MAX_SWITCH_CASES = 8;
+export const MAX_DRAWN_TEXT = 4;   // live Draw Text entries, like the tile override table
+export const MAX_SPRITE_STATES = 4;
+
+export const DRAW_TEXT_BACKGROUND = 0;
+export const DRAW_TEXT_OVERLAY = 1;
 
 // An actor reference in the bytecode: a scene actor index, or one of these.
 export const ACTOR_REF_SELF = 0xff;
@@ -69,7 +108,10 @@ export const MAX_ACTOR_DISTANCE = 255;
 // with a warning rather than letting the runtime deadlock.
 export const BLOCKING_EVENTS = new Set([
   'WAIT', 'TEXT', 'MENU', 'CHOICE', 'WAIT_INPUT', 'PUSH_SCENE', 'POP_SCENE',
-  'POP_ALL_SCENES', 'FADE_IN', 'FADE_OUT',
+  'POP_ALL_SCENES', 'FADE_IN', 'FADE_OUT', 'OVERLAY_MOVE',
+  // A loop runs until its condition goes false, which it cannot do inside a
+  // slot that has to finish in one frame.
+  'EXPR_LOOP',
 ]);
 
 // The launcher of a projectile, when it is not an actor in the scene.
@@ -150,7 +192,15 @@ export function compileProject(project) {
   const internString = (raw) => internRaw(wrapText(raw));
 
   const varIndex = new Map();
-  project.variables.slice(0, MAX_VARIABLES).forEach((v, i) => varIndex.set(v.id, i));
+  const exprVarIndex = new Map(); // by name, for $name in expressions
+  project.variables.slice(0, MAX_VARIABLES).forEach((v, i) => {
+    varIndex.set(v.id, i);
+    exprVarIndex.set(String(v.name), i);
+  });
+
+  // The actor whose script is being compiled, so a "self" reference can look up
+  // which sprite — and therefore which animation states — it will have.
+  let ownerActor = null;
 
   const sceneIndex = new Map();
   project.scenes.forEach((s, i) => sceneIndex.set(s.id, i));
@@ -180,6 +230,35 @@ export function compileProject(project) {
 
   // Fade speed: 0 is fastest. Stored as frames spent on each dither step.
   const fadeSpeed = (v) => Math.max(0, Math.min(7, v === undefined ? 2 : v | 0));
+
+  // Compile an expression, turning a parse error into a warning that names the
+  // script and the problem. Returns null when it could not be compiled, so the
+  // event is skipped rather than breaking the whole export.
+  function compileExpr(src, ctx, label) {
+    try {
+      return compileExpression(src, exprVarIndex);
+    } catch (err) {
+      warnings.push(`${ctx}: ${label} — ${err.message} — skipped`);
+      return null;
+    }
+  }
+
+  // Which state of the actor's sprite an event names. States belong to the
+  // sprite, so this needs the actor to know which sprite list to look in.
+  function spriteStateIndex(ev, scene, actorIdx, ctx) {
+    // 0xFF means "self", whose sprite is only known at runtime — the editor
+    // resolves it against the actor that owns the script, so fall back to
+    // matching by name across the project when the index is not a real actor.
+    const actor = (actorIdx < 0xfe && scene) ? scene.actors[actorIdx] : ownerActor;
+    const sprite = actor ? spriteById(project, actor.spriteId) : null;
+    const states = (sprite && sprite.states) || [];
+    const idx = states.findIndex((s) => s.id === ev.stateId);
+    if (idx < 0) {
+      warnings.push(`${ctx}: Set Actor Animation State names a state that sprite does not have — skipped`);
+      return -1;
+    }
+    return idx;
+  }
 
   // Compile one event list; `scene` provides actor-index context.
   // `nonBlocking` marks a slot that runs to completion every frame.
@@ -480,6 +559,117 @@ export function compileProject(project) {
           emit(OP.STORE_ACTOR_POS, idx, vx, vy);
           break;
         }
+        case 'EXPR_IF': {
+          const expr = compileExpr(ev.expression, ctx, 'If Math Expression');
+          if (!expr) break;
+          emit(OP.EXPR_IF, expr.length, ...expr);
+          const elsePatch = code.length; emitU16(0);
+          compileEvents(ev.then, scene, ctx, nonBlocking);
+          emit(OP.JUMP);
+          const endPatch = code.length; emitU16(0);
+          patchU16(code, elsePatch, code.length);
+          compileEvents(ev.else, scene, ctx, nonBlocking);
+          patchU16(code, endPatch, code.length);
+          break;
+        }
+        case 'EXPR_LOOP': {
+          const expr = compileExpr(ev.expression, ctx, 'Loop While Math Expression');
+          if (!expr) break;
+          const top = code.length;
+          emit(OP.EXPR_LOOP, expr.length, ...expr);
+          const endPatch = code.length; emitU16(0);
+          compileEvents(ev.events, scene, ctx, nonBlocking);
+          emit(OP.JUMP);
+          emitU16(top); // back to re-test the condition
+          patchU16(code, endPatch, code.length);
+          break;
+        }
+        case 'SEED_RNG':
+          emit(OP.SEED_RNG);
+          break;
+        case 'SWITCH': {
+          const v = varIndex.get(ev.varId);
+          if (v === undefined) { warnings.push(`${ctx}: Switch has no variable selected — skipped`); break; }
+          const cases = (ev.cases || []).slice(0, MAX_SWITCH_CASES);
+          if (!cases.length) { warnings.push(`${ctx}: Switch has no options — skipped`); break; }
+          const seen = new Set();
+          for (const c of cases) {
+            const value = byte(c.value);
+            if (seen.has(value)) {
+              warnings.push(`${ctx}: Switch tests ${value} more than once — only the first of those options can ever run`);
+            }
+            seen.add(value);
+          }
+          // A jump table: constant-time, and smaller than a chain of compares.
+          emit(OP.SWITCH, v, cases.length);
+          const casePatches = [];
+          for (const c of cases) {
+            emit(byte(c.value));
+            casePatches.push(code.length);
+            emitU16(0);
+          }
+          const elsePatch = code.length; emitU16(0);
+          const endPatches = [];
+          cases.forEach((c, i) => {
+            patchU16(code, casePatches[i], code.length);
+            compileEvents(c.events, scene, ctx, nonBlocking);
+            emit(OP.JUMP);
+            endPatches.push(code.length);
+            emitU16(0);
+          });
+          patchU16(code, elsePatch, code.length);
+          compileEvents(ev.else, scene, ctx, nonBlocking);
+          for (const p of endPatches) patchU16(code, p, code.length);
+          break;
+        }
+        case 'SET_ANIM_FRAME': {
+          const idx = actorTarget(ev, scene, ctx, 'Set Actor Animation Frame');
+          if (idx < 0) break;
+          emit(OP.SET_ANIM_FRAME, idx, byte(ev.frame));
+          break;
+        }
+        case 'SET_ANIM_SPEED': {
+          const idx = actorTarget(ev, scene, ctx, 'Set Actor Animation Speed');
+          if (idx < 0) break;
+          const speed = ANIM_SPEEDS.some((s) => s.value === ev.speed) ? ev.speed : 20;
+          emit(OP.SET_ANIM_SPEED, idx, speed);
+          break;
+        }
+        case 'SET_ANIM_STATE': {
+          const idx = actorTarget(ev, scene, ctx, 'Set Actor Animation State');
+          if (idx < 0) break;
+          // The state belongs to whichever sprite the actor is showing, so it
+          // is resolved by position within that sprite's state list.
+          const stateIdx = spriteStateIndex(ev, scene, idx, ctx);
+          if (stateIdx < 0) break;
+          emit(OP.SET_ANIM_STATE, idx, stateIdx, ev.loop ? 1 : 0);
+          break;
+        }
+        case 'SHOW_OVERLAY':
+          emit(OP.SHOW_OVERLAY, ev.fill === 'white' ? 1 : 0,
+            clampByte(ev.x, 0, SCENE_W), clampByte(ev.y, 0, SCENE_H));
+          break;
+        case 'HIDE_OVERLAY':
+          emit(OP.HIDE_OVERLAY);
+          break;
+        case 'OVERLAY_MOVE': {
+          const speed = OVERLAY_SPEEDS.some((s) => s.value === ev.speed) ? ev.speed : 1;
+          emit(OP.OVERLAY_MOVE, clampByte(ev.x, 0, SCENE_W), clampByte(ev.y, 0, SCENE_H), speed);
+          break;
+        }
+        case 'OVERLAY_CUTOFF':
+          emit(OP.OVERLAY_CUTOFF, clampByte(ev.y, 0, 64));
+          break;
+        case 'DRAW_TEXT': {
+          const text = String(ev.text || '');
+          if (!text) { warnings.push(`${ctx}: Draw Text has no text — skipped`); break; }
+          // Drawn text is positioned by hand, so it must not be word-wrapped
+          // the way dialogue is; it shares the string table all the same.
+          emit(OP.DRAW_TEXT, internRaw(text),
+            clampByte(ev.x, 0, 255), clampByte(ev.y, 0, 255),
+            ev.location === 'overlay' ? DRAW_TEXT_OVERLAY : DRAW_TEXT_BACKGROUND);
+          break;
+        }
         // Editor-only: a comment carries no behaviour and emits nothing.
         case 'COMMENT':
           break;
@@ -503,29 +693,31 @@ export function compileProject(project) {
   // emit a reference immediately, while the offset is filled in on drain.
   const scriptOffsets = [];
   const pendingScripts = [];
-  function addScript(events, scene, ctx, nonBlocking) {
+  function addScript(events, scene, ctx, nonBlocking, owner = ownerActor) {
     if (!events || !events.length) return NO_SCRIPT;
     const idx = scriptOffsets.length;
     if (idx >= 255) throw new Error('Too many scripts (max 255)');
     scriptOffsets.push(0); // patched in drainScripts()
-    pendingScripts.push({ idx, events, scene, ctx, nonBlocking });
+    pendingScripts.push({ idx, events, scene, ctx, nonBlocking, owner });
     return idx;
   }
   function drainScripts() {
     while (pendingScripts.length) {
       const job = pendingScripts.shift();
       scriptOffsets[job.idx] = code.length;
+      ownerActor = job.owner || null;
       compileEvents(job.events, job.scene, job.ctx, job.nonBlocking);
       emit(OP.END);
     }
+    ownerActor = null;
   }
 
   // Register every lifecycle slot of one entity, returning { slotKey: index }.
-  function addSlots(entity, slots, scene, what) {
+  function addSlots(entity, slots, scene, what, owner = null) {
     const out = {};
     for (const { key, label } of slots) {
       out[key] = addScript(entity.scripts[key], scene, `${what} ${label}`,
-        NON_BLOCKING_SLOTS.includes(key));
+        NON_BLOCKING_SLOTS.includes(key), owner);
     }
     return out;
   }
@@ -538,7 +730,7 @@ export function compileProject(project) {
       const sprite = spriteById(project, a.spriteId);
       let spriteIdx = project.sprites.indexOf(sprite);
       if (spriteIdx < 0) { warnings.push(`Actor "${a.name}" ${where} has no sprite — using sprite 0`); spriteIdx = 0; }
-      const slots = addSlots(a, ACTOR_SCRIPT_SLOTS, scene, `Actor "${a.name}" ${where}`);
+      const slots = addSlots(a, ACTOR_SCRIPT_SLOTS, scene, `Actor "${a.name}" ${where}`, a);
       const group = collisionGroupCode(a.collisionGroup);
       if (!group && a.collideWith) {
         warnings.push(`Actor "${a.name}" ${where} collides with something but is in no collision group — it can still be hit, but nothing can be hit by it`);
@@ -552,6 +744,7 @@ export function compileProject(project) {
         animate: a.animate ? 1 : 0,
         facing: directionCode(a.facing),
         speed: ACTOR_SPEEDS.some((s) => s.value === a.speed) ? a.speed : 1,
+        animSpeed: Number.isFinite(a.animSpeed) ? Math.max(0, Math.min(255, a.animSpeed | 0)) : 20,
         group,
         collideWith: byte(a.collideWith) & 0x0f,
         scripts: slots,
@@ -585,12 +778,41 @@ export function compileProject(project) {
     width: s.width,
     height: s.height,
     frames: s.frames.map((f) => pixelsToBytes(f, s.width, s.height)),
+    states: (s.states || []).slice(0, MAX_SPRITE_STATES).map((st) => ({
+      name: st.name,
+      from: Math.max(0, Math.min(s.frames.length - 1, st.from | 0)),
+      to: Math.max(0, Math.min(s.frames.length - 1, st.to | 0)),
+    })),
   }));
 
   const songs = (project.songs || []).map((s) => ({
     name: s.name,
     notes: s.notes.map((n) => ({ f: n.f, d: n.d })),
   }));
+
+  // Which optional engine subsystems this game actually uses. The generated
+  // sketch guards each one, so a game pays flash and RAM only for what it
+  // scripts — the ATmega32u4's ~28 KB does not stretch to everything at once.
+  const usedOps = new Set(code);
+  const uses = (...ops) => ops.some((op) => usedOps.has(op));
+  const features = {
+    OVERLAY: uses(OP.SHOW_OVERLAY, OP.HIDE_OVERLAY, OP.OVERLAY_MOVE, OP.OVERLAY_CUTOFF, OP.DRAW_TEXT),
+    EXPR: uses(OP.EXPR_IF, OP.EXPR_LOOP),
+    SWITCH: uses(OP.SWITCH),
+    SAVES: uses(OP.SAVE_GAME, OP.LOAD_GAME, OP.SAVE_CHECK, OP.DELETE_SAVE),
+    SONGS: uses(OP.PLAY_SONG, OP.STOP_SONG) && songs.length > 0,
+    MENUS: uses(OP.MENU),
+    BUTTON_SCRIPTS: uses(OP.ATTACH_SCRIPT, OP.REMOVE_BUTTON_SCRIPT),
+    SCENE_STACK: uses(OP.PUSH_SCENE, OP.POP_SCENE, OP.POP_ALL_SCENES),
+    FADE: uses(OP.FADE_IN, OP.FADE_OUT, OP.PUSH_SCENE, OP.POP_SCENE, OP.POP_ALL_SCENES),
+    LED: uses(OP.SET_LED),
+    EFFECTS: uses(OP.ACTOR_EFFECT),
+    // Projectiles imply collisions; collisions also come from any On Hit script.
+    PROJECTILES: uses(OP.LAUNCH_PROJECTILE),
+    COLLISIONS: uses(OP.LAUNCH_PROJECTILE)
+      || scenes.some((sc) => sc.actors.some((a) => a.group !== 0)),
+    UPDATE_SCRIPTS: scenes.some((sc) => sc.actors.some((a) => a.scripts.update !== NO_SCRIPT)),
+  };
 
   const startScene = sceneIndex.get(project.settings.startSceneId) ?? 0;
   const startSceneObj = project.scenes[startScene];
@@ -612,11 +834,13 @@ export function compileProject(project) {
     startX: clampTile(project.settings.startX, cols(startSceneObj)),
     startY: clampTile(project.settings.startY, rows(startSceneObj)),
     playerSpriteIdx,
+    features,
     warnings,
   };
 }
 
 function clampTile(v, max) { return Math.max(0, Math.min(max - 1, v | 0)); }
+function clampByte(v, lo, hi) { return Math.max(lo, Math.min(hi, v | 0)); }
 function byte(v) { return Math.max(0, Math.min(255, v | 0)); }
 function int8byte(v) { const c = Math.max(-128, Math.min(127, v | 0)); return c & 0xff; }
 function patchU16(code, at, value) { code[at] = value & 0xff; code[at + 1] = (value >> 8) & 0xff; }

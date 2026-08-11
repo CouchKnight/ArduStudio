@@ -14,7 +14,9 @@ import {
   ATTACH_OVERRIDE, NUM_BUTTONS,
   PROJECTILE_SRC_SELF, PROJECTILE_SRC_PLAYER,
   ACTOR_REF_SELF, ACTOR_REF_PLAYER,
+  MAX_DRAWN_TEXT, DRAW_TEXT_OVERLAY, DRAW_TEXT_BACKGROUND,
 } from './compiler.js';
+import { evalExpression } from './expression.js';
 import { FONT5X7 } from './font5x7.js';
 
 export const BTN = { LEFT: 1, RIGHT: 2, UP: 4, DOWN: 8, A: 16, B: 32 };
@@ -22,7 +24,7 @@ export const BTN = { LEFT: 1, RIGHT: 2, UP: 4, DOWN: 8, A: 16, B: 32 };
 const W = 128, H = 64;
 const PLAYER_SPEED = 2;   // px per frame (8px tile / 2 = 4 frames per step)
 const ACTOR_MOVE_INTERVAL = 48; // frames between AI steps
-const ANIM_INTERVAL = 20;       // frames between animation frames
+const ANIM_INTERVAL = 20;       // default frames between animation steps
 const TEXT_CHARS_PER_FRAME = 2;
 const MAX_TILE_OVERRIDES = 16;  // matches the C++ engine's RAM override table
 const SCRIPT_QUEUE_DEPTH = 8;   // pending init/hit scripts waiting for the VM
@@ -93,10 +95,10 @@ export class Emulator {
 
   reset() {
     this.vars = new Uint8Array(32);
-    this.script = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0, waitFade: false };
+    this.script = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0, waitFade: false, waitOverlay: false };
     // On Update scripts run to completion inside one frame, so they need no
     // persistent program counter — one scratch context is reused for all.
-    this.scratch = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0, waitFade: false };
+    this.scratch = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0, waitFade: false, waitOverlay: false };
     this.text = null; // { str, pageStart, shown }
     this.menu = null; // { varIdx, count, labels, sel, flags }
     // RGB LED, mirroring Arduboy2's setRGBled / digitalWriteRGB.
@@ -112,6 +114,11 @@ export class Emulator {
     this.sceneStack = [];
     // level 0 = fully visible; target drives the dither animation.
     this.fade = { level: 0, target: 0, speed: 0, tick: 0 };
+    // The Game Boy's hardware window, as a software panel: a filled rectangle
+    // from (px,py) to the bottom-right of the screen.
+    this.overlay = { on: false, fill: 0, px: 0, py: 0, tx: 0, ty: 0, speed: 0 };
+    this.overlayCutoff = H; // overlay and dialogue draw only above this line
+    this.drawnText = [];    // { strIdx, x, y, location }, bounded like tile overrides
     this.scriptQueue = [];
     // Scripts attached to buttons persist across scene changes until removed.
     // Bytecode button order: 0=LEFT 1=RIGHT 2=UP 3=DOWN 4=A 5=B.
@@ -152,6 +159,9 @@ export class Emulator {
       scriptMove: false,
       dir: 1, timer: this.rand(ACTOR_MOVE_INTERVAL),
       frame: 0, anim: this.rand(ANIM_INTERVAL),
+      animSpeed: a.animSpeed,
+      // Frame range currently playing, and whether it repeats.
+      animFrom: 0, animTo: this.spriteLastFrame(a.spriteIdx), animLoop: true,
       subTick: 0, // half-speed carry
     }));
     this.player.px = px * TILE; this.player.py = py * TILE;
@@ -162,6 +172,8 @@ export class Emulator {
     this.text = null;
     this.script.waitActor = -1;
     for (const p of this.projectiles) p.active = false;
+    this.drawnText = [];
+    this.overlay.on = false;
 
     // Actors initialise before the scene does, and each init can block on
     // dialogue, so they queue up rather than all running at once.
@@ -200,6 +212,7 @@ export class Emulator {
     this.script.waitActor = -1;
     this.script.waitInput = 0;
     this.script.waitFade = false;
+    this.script.waitOverlay = false;
     this.text = null;
   }
 
@@ -321,6 +334,7 @@ export class Emulator {
       if (!this.script.active) this.checkButtonScripts();
     }
     this.updateActors(!this.script.active);
+    this.updateOverlay();
     this.updateProjectiles();
     this.runUpdateScripts();
     this.updateCamera();
@@ -341,7 +355,7 @@ export class Emulator {
       s.active = true;
       s.pc = this.g.scriptOffsets[a.def.scripts.update];
       s.self = i;
-      s.wait = 0; s.waitActor = -1; s.waitInput = 0; s.waitFade = false;
+      s.wait = 0; s.waitActor = -1; s.waitInput = 0; s.waitFade = false; s.waitOverlay = false;
       this.runScript(s);
       // A scene change rebuilds this.actors, so the indices we are walking
       // no longer mean anything.
@@ -599,9 +613,14 @@ export class Emulator {
       if (a.effectFrames > 0 && --a.effectFrames === 0) a.effect = 0;
       if (a.hidden) continue;
       const step = this.actorStep(a);
-      if (a.def.animate && this.g.sprites[a.spriteIdx].frames.length > 1) {
+      if (a.def.animate && a.animSpeed > 0 && a.animTo > a.animFrom) {
         a.anim++;
-        if (a.anim >= ANIM_INTERVAL) { a.anim = 0; a.frame = (a.frame + 1) % this.g.sprites[a.spriteIdx].frames.length; }
+        if (a.anim >= a.animSpeed) {
+          a.anim = 0;
+          if (a.frame < a.animTo) a.frame++;
+          else if (a.animLoop) a.frame = a.animFrom;
+          // A non-looping state simply stops on its last frame.
+        }
       }
       // A scripted Move Actor walks even while the script runs, straight to
       // its target (x first, then y), ignoring collisions.
@@ -652,6 +671,10 @@ export class Emulator {
     if (s.waitFade) {
       if (this.fading()) return;
       s.waitFade = false;
+    }
+    if (s.waitOverlay) {
+      if (this.overlayMoving()) return;
+      s.waitOverlay = false;
     }
     if (s.waitActor >= 0) {
       const a = this.actors[s.waitActor];
@@ -934,6 +957,110 @@ export class Emulator {
           if (at) { this.vars[vx] = at.x; this.vars[vy] = at.y; }
           break;
         }
+        case OP.EXPR_IF: {
+          const len = code[s.pc++];
+          const value = evalExpression(code, s.pc, len, this.vars, (n) => this.rand(n));
+          s.pc += len;
+          const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          if (!value) s.pc = elseAddr;
+          break;
+        }
+        case OP.EXPR_LOOP: {
+          const len = code[s.pc++];
+          const value = evalExpression(code, s.pc, len, this.vars, (n) => this.rand(n));
+          s.pc += len;
+          const endAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          if (!value) s.pc = endAddr;
+          break;
+        }
+        case OP.SEED_RNG:
+          // On device this is Arduboy2::initRandomSeed(); here, anything the
+          // player could not have predicted will do.
+          this.rngState = (this.rngState ^ (this.frame * 2654435761) ^ Date.now()) >>> 0 || 1;
+          break;
+        case OP.SWITCH: {
+          const v = this.vars[code[s.pc++]];
+          const count = code[s.pc++];
+          let target = -1;
+          for (let i = 0; i < count; i++) {
+            const at = s.pc + i * 3;
+            if (code[at] === v && target < 0) target = code[at + 1] | (code[at + 2] << 8);
+          }
+          const elseAddr = code[s.pc + count * 3] | (code[s.pc + count * 3 + 1] << 8);
+          s.pc = target >= 0 ? target : elseAddr;
+          break;
+        }
+        case OP.SET_ANIM_FRAME: {
+          let idx = code[s.pc++];
+          const frame = code[s.pc++];
+          if (idx === 0xff) idx = s.self;
+          const a = this.actors[idx];
+          if (a) a.frame = Math.min(frame, this.spriteLastFrame(a.spriteIdx));
+          break;
+        }
+        case OP.SET_ANIM_SPEED: {
+          let idx = code[s.pc++];
+          const speed = code[s.pc++];
+          if (idx === 0xff) idx = s.self;
+          if (this.actors[idx]) { this.actors[idx].animSpeed = speed; this.actors[idx].anim = 0; }
+          break;
+        }
+        case OP.SET_ANIM_STATE: {
+          let idx = code[s.pc++];
+          const stateIdx = code[s.pc++], loop = code[s.pc++];
+          if (idx === 0xff) idx = s.self;
+          const a = this.actors[idx];
+          if (a) {
+            const states = this.g.sprites[a.spriteIdx].states;
+            const st = states && states[stateIdx];
+            if (st) {
+              a.animFrom = st.from;
+              a.animTo = st.to;
+              a.animLoop = !!loop;
+              a.frame = st.from;
+              a.anim = 0;
+            }
+          }
+          break;
+        }
+        case OP.SHOW_OVERLAY: {
+          const fill = code[s.pc++], x = code[s.pc++], y = code[s.pc++];
+          this.overlay.on = true;
+          this.overlay.fill = fill;
+          this.overlay.px = this.overlay.tx = x * TILE;
+          this.overlay.py = this.overlay.ty = y * TILE;
+          this.overlay.speed = 0;
+          break;
+        }
+        case OP.HIDE_OVERLAY:
+          this.overlay.on = false;
+          break;
+        case OP.OVERLAY_MOVE: {
+          const x = code[s.pc++], y = code[s.pc++], speed = code[s.pc++];
+          this.overlay.tx = x * TILE;
+          this.overlay.ty = y * TILE;
+          this.overlay.speed = speed;
+          if (!this.overlay.on || speed === 0) {
+            this.overlay.px = this.overlay.tx;
+            this.overlay.py = this.overlay.ty;
+            break;
+          }
+          s.waitOverlay = true;
+          return; // block until it arrives
+        }
+        case OP.OVERLAY_CUTOFF:
+          this.overlayCutoff = code[s.pc++];
+          break;
+        case OP.DRAW_TEXT: {
+          const strIdx = code[s.pc++], x = code[s.pc++], y = code[s.pc++];
+          const location = code[s.pc++];
+          // Same slot reused when text is redrawn at the same spot, so a script
+          // that updates a counter every frame cannot exhaust the table.
+          const at = this.drawnText.find((t) => t.x === x && t.y === y && t.location === location);
+          if (at) at.strIdx = strIdx;
+          else if (this.drawnText.length < MAX_DRAWN_TEXT) this.drawnText.push({ strIdx, x, y, location });
+          break;
+        }
         case OP.MENU: {
           const varIdx = code[s.pc++];
           const count = code[s.pc++];
@@ -1106,6 +1233,7 @@ export class Emulator {
         if (t) this.drawBytesOverwrite(tx * TILE - this.camX, ty * TILE - this.camY, t.bytes, 8, 8);
       }
     }
+    this.drawTexts(DRAW_TEXT_BACKGROUND);
     for (const a of this.actors) {
       if (a.hidden) continue;
       // Flicker blanks the actor on alternate pairs of frames; shake jitters it
@@ -1128,8 +1256,56 @@ export class Emulator {
       this.drawBytesMasked(Math.round(this.player.px) - this.camX, Math.round(this.player.py) - this.camY, f, pspr.width, pspr.height);
     }
     this.applyFade();
+    this.drawOverlay();
+    this.drawTexts(DRAW_TEXT_OVERLAY);
     if (this.text) this.drawTextbox();
     if (this.menu) this.drawMenu();
+  }
+
+  spriteLastFrame(idx) {
+    const spr = this.g.sprites[idx];
+    return spr ? spr.frames.length - 1 : 0;
+  }
+
+  // The overlay panel covers everything below and right of its corner, and is
+  // clipped by the scanline cutoff so it can be used as a top-of-screen band.
+  drawOverlay() {
+    if (!this.overlay.on) return;
+    const x = Math.round(this.overlay.px);
+    const y = Math.round(this.overlay.py);
+    const bottom = Math.min(H, this.overlayCutoff);
+    if (y >= bottom) return;
+    this.fillRect(x, y, W - x, bottom - y, this.overlay.fill);
+  }
+
+  // Background text scrolls with the camera; overlay text is fixed to the
+  // screen and drawn on top of the panel.
+  drawTexts(location) {
+    for (const t of this.drawnText) {
+      if (t.location !== location) continue;
+      const str = this.g.strings[t.strIdx];
+      if (str === undefined) continue;
+      if (location === DRAW_TEXT_OVERLAY) {
+        if (t.y >= this.overlayCutoff) continue;
+        this.drawText(t.x, t.y, str);
+      } else {
+        this.drawText(t.x - this.camX, t.y - this.camY, str);
+      }
+    }
+  }
+
+  // Overlay Move To animates towards its target; the script waits for arrival.
+  updateOverlay() {
+    const o = this.overlay;
+    if (!o.on) return;
+    if (o.speed === 0) { o.px = o.tx; o.py = o.ty; return; }
+    o.px += Math.sign(o.tx - o.px) * Math.min(o.speed, Math.abs(o.tx - o.px));
+    o.py += Math.sign(o.ty - o.py) * Math.min(o.speed, Math.abs(o.ty - o.py));
+  }
+
+  overlayMoving() {
+    const o = this.overlay;
+    return o.on && (o.px !== o.tx || o.py !== o.ty);
   }
 
   // Ordered dither over the whole scene. Dialogue and menus are drawn after
@@ -1147,6 +1323,7 @@ export class Emulator {
 
   drawTextbox() {
     const t = this.text;
+    if (this.overlayCutoff <= 38) return; // cut off above the dialogue box
     this.fillRect(0, 38, W, 26, 0);
     this.drawRectOutline(0, 38, W, 26, 1);
     const pageEnd = this.pageEnd(t);

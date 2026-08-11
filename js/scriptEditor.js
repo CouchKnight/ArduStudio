@@ -6,7 +6,10 @@ import {
   makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS,
   DIRECTIONS, PROJECTILE_DIRS, ACTOR_SPEEDS, ACTOR_EFFECTS, COLLIDE_TARGETS,
 } from './model.js';
-import { MAX_ACTOR_DISTANCE } from './compiler.js';
+import {
+  MAX_ACTOR_DISTANCE, ANIM_SPEEDS, OVERLAY_SPEEDS, MAX_SWITCH_CASES,
+} from './compiler.js';
+import { compileExpression } from './expression.js';
 
 // Direction codes by name, for the Store Actor Direction hint.
 const DIR_CODES = Object.fromEntries(DIRECTIONS.map((d) => [d.key, d.code]));
@@ -100,18 +103,31 @@ function labelFor(ev) {
 // happens on nearly every edit) does not spring them all open again.
 const collapsed = new Set();
 
+// Why an expression will not compile, or null when it is fine. The editor uses
+// the very same compiler the exporter does, so the two can never disagree.
+function expressionProblem(src, project) {
+  const names = new Map();
+  project.variables.forEach((v, i) => names.set(String(v.name), i));
+  try {
+    compileExpression(src, names);
+    return null;
+  } catch (err) {
+    return err.message;
+  }
+}
+
 // app: { project, save() }, scene: scene the script lives in (for actor targets)
-export function renderScriptEditor(app, scene, events, onChange) {
+export function renderScriptEditor(app, scene, events, onChange, owner = null) {
   const root = el('div', { class: 'script-list' });
 
   const rerender = () => {
     onChange();
-    const fresh = renderScriptEditor(app, scene, events, onChange);
+    const fresh = renderScriptEditor(app, scene, events, onChange, owner);
     root.replaceWith(fresh);
   };
 
   events.forEach((ev, i) => {
-    root.append(renderEventCard(app, scene, events, i, rerender));
+    root.append(renderEventCard(app, scene, events, i, rerender, owner));
   });
 
   root.append(el('div', { class: 'add-event-row' }, addEventSelect((ev) => {
@@ -122,7 +138,7 @@ export function renderScriptEditor(app, scene, events, onChange) {
   return root;
 }
 
-function renderEventCard(app, scene, list, index, rerender) {
+function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
   const ev = list[index];
   const card = el('div', { class: `event-card ev-${ev.type}` });
 
@@ -249,9 +265,9 @@ function renderEventCard(app, scene, list, index, rerender) {
       fields.append(cmpSel);
       fields.append(numInput('value', 0, 255));
       card.append(el('div', { class: 'event-branch-label' }, 'Then'));
-      card.append(renderScriptEditor(app, scene, ev.then, app.save));
+      card.append(renderScriptEditor(app, scene, ev.then, app.save, ownerActor));
       card.append(el('div', { class: 'event-branch-label' }, 'Else'));
-      card.append(renderScriptEditor(app, scene, ev.else, app.save));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
       break;
     }
     case 'TONE':
@@ -341,7 +357,7 @@ function renderEventCard(app, scene, list, index, rerender) {
         onchange: (e) => { ev.override = e.target.checked; changed(); },
       }), ' Override default button action'));
       card.append(el('div', { class: 'event-branch-label' }, 'On press'));
-      card.append(renderScriptEditor(app, scene, ev.script, app.save));
+      card.append(renderScriptEditor(app, scene, ev.script, app.save, ownerActor));
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
         'Runs whenever the button is pressed, and stays attached across scenes until removed. '
         + 'Without override the button also keeps its normal action.'));
@@ -364,9 +380,9 @@ function renderEventCard(app, scene, list, index, rerender) {
         'Checks buttons held right now and continues immediately — it never waits. '
         + 'To react every time a button is pressed, use Attach Script To Button.'));
       card.append(el('div', { class: 'event-branch-label' }, 'True'));
-      card.append(renderScriptEditor(app, scene, ev.then, app.save));
+      card.append(renderScriptEditor(app, scene, ev.then, app.save, ownerActor));
       card.append(el('div', { class: 'event-branch-label' }, 'False'));
-      card.append(renderScriptEditor(app, scene, ev.else, app.save));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
       break;
     }
     case 'SET_LED': {
@@ -547,9 +563,9 @@ function renderEventCard(app, scene, list, index, rerender) {
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
         'Tile coordinates, checked once — it never waits.'));
       card.append(el('div', { class: 'event-branch-label' }, 'True'));
-      card.append(renderScriptEditor(app, scene, ev.then, app.save));
+      card.append(renderScriptEditor(app, scene, ev.then, app.save, ownerActor));
       card.append(el('div', { class: 'event-branch-label' }, 'False'));
-      card.append(renderScriptEditor(app, scene, ev.else, app.save));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
       break;
     }
     case 'IF_ACTOR_DISTANCE': {
@@ -562,9 +578,9 @@ function renderEventCard(app, scene, list, index, rerender) {
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
         'Straight-line distance in tiles. Checked once — it never waits.'));
       card.append(el('div', { class: 'event-branch-label' }, 'True'));
-      card.append(renderScriptEditor(app, scene, ev.then, app.save));
+      card.append(renderScriptEditor(app, scene, ev.then, app.save, ownerActor));
       card.append(el('div', { class: 'event-branch-label' }, 'False'));
-      card.append(renderScriptEditor(app, scene, ev.else, app.save));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
       break;
     }
     case 'STORE_ACTOR_DIR':
@@ -602,9 +618,156 @@ function renderEventCard(app, scene, list, index, rerender) {
         changed();
       });
       fields.append(el('label', { style: 'flex:1 1 100%' }, name));
-      card.append(renderScriptEditor(app, scene, ev.events, app.save));
+      card.append(renderScriptEditor(app, scene, ev.events, app.save, ownerActor));
       break;
     }
+    case 'EXPR_IF':
+    case 'EXPR_LOOP': {
+      const isLoop = ev.type === 'EXPR_LOOP';
+      const input = el('input', {
+        type: 'text', value: ev.expression, spellcheck: false,
+        placeholder: 'e.g. 6 * $health',
+      });
+      const status = el('span', { class: 'hint', style: 'flex-basis:100%' });
+      // Check as you type: a bad expression is a warning here, not a surprise
+      // at export time.
+      const check = () => {
+        ev.expression = input.value;
+        const problem = expressionProblem(input.value, project);
+        input.classList.toggle('bad', !!problem);
+        status.textContent = problem
+          ? `⚠ ${problem}`
+          : (isLoop
+            ? 'Repeats the events below while this stays true (non-zero).'
+            : 'True when this is non-zero.');
+        status.classList.toggle('warn-text', !!problem);
+        changed();
+      };
+      input.addEventListener('input', check);
+      fields.append(el('label', { style: 'flex:1 1 100%' }, 'Condition', input));
+      fields.append(status);
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        '$name reads a variable · + - * / % · == != < > <= >= · && || ! · min, max, abs, rnd'));
+      check();
+      if (isLoop) {
+        card.append(renderScriptEditor(app, scene, ev.events, app.save, ownerActor));
+        fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+          'A loop whose condition never goes false stalls this script — the screen keeps '
+          + 'running, but nothing else in the script does.'));
+      } else {
+        card.append(el('div', { class: 'event-branch-label' }, 'True'));
+        card.append(renderScriptEditor(app, scene, ev.then, app.save, ownerActor));
+        card.append(el('div', { class: 'event-branch-label' }, 'False'));
+        card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
+      }
+      break;
+    }
+    case 'SEED_RNG':
+      fields.append(el('span', { class: 'hint' },
+        'Run this in response to a button press so random numbers differ between playthroughs.'));
+      break;
+    case 'SWITCH': {
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+      const countSel = el('select', {
+        onchange: () => {
+          const n = parseInt(countSel.value, 10);
+          while (ev.cases.length < n) ev.cases.push({ value: ev.cases.length, events: [] });
+          ev.cases.length = n;
+          changed();
+          rerender();
+        },
+      });
+      for (let n = 1; n <= MAX_SWITCH_CASES; n++) {
+        countSel.append(el('option', { value: n, selected: ev.cases.length === n }, String(n)));
+      }
+      fields.append(el('label', {}, 'Number of options', countSel));
+      ev.cases.forEach((c, i) => {
+        card.append(el('div', { class: 'event-branch-label' }, 'If equal to ', el('input', {
+          type: 'number', min: 0, max: 255, value: c.value,
+          onchange: (e) => { c.value = parseInt(e.target.value, 10) || 0; changed(); },
+        })));
+        card.append(renderScriptEditor(app, scene, c.events, app.save, ownerActor));
+      });
+      card.append(el('div', { class: 'event-branch-label' }, 'Else'));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
+      break;
+    }
+    case 'SET_ANIM_FRAME':
+      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Animation frame', numInput('frame', 0, 3)));
+      break;
+    case 'SET_ANIM_SPEED':
+      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Animation speed', optionSelect('speed', ANIM_SPEEDS)));
+      break;
+    case 'SET_ANIM_STATE': {
+      fields.append(el('label', {}, 'Actor', actorSelect()));
+      // States belong to the sprite, so list the ones on whichever sprite the
+      // chosen actor is showing.
+      const target = (ev.target && ev.target !== 'self' && scene)
+        ? scene.actors.find((a) => a.id === ev.target)
+        : ownerActor;
+      const sprite = target ? project.sprites.find((sp) => sp.id === target.spriteId) : null;
+      const states = (sprite && sprite.states) || [];
+      const stateSel = el('select', { onchange: () => { ev.stateId = stateSel.value; changed(); } });
+      if (!states.length) stateSel.append(el('option', { value: '' }, '(no sprite selected)'));
+      for (const st of states) {
+        stateSel.append(el('option', { value: st.id, selected: ev.stateId === st.id },
+          `${st.name} (${st.from}–${st.to})`));
+      }
+      fields.append(el('label', {}, 'Animation state', stateSel));
+      fields.append(el('label', {}, el('input', {
+        type: 'checkbox', checked: ev.loop,
+        onchange: (e) => { ev.loop = e.target.checked; changed(); },
+      }), ' Loop animation'));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        states.length
+          ? 'Edit a sprite\'s states in the Sprites tab. Without Loop it stops on the last frame.'
+          : 'Give the actor a sprite first — animation states belong to the sprite.'));
+      break;
+    }
+    case 'DRAW_TEXT': {
+      const ta = el('textarea', { rows: 2, spellcheck: false, value: ev.text, placeholder: 'Text…' });
+      ta.addEventListener('input', () => { ev.text = ta.value; changed(); });
+      fields.append(el('label', { style: 'flex:1 1 100%' }, ta));
+      fields.append(el('label', {}, 'X', numInput('x', 0, 127)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, 63)));
+      fields.append(el('label', {}, 'Location', keySelect('location', [
+        { key: 'background', label: 'Background' },
+        { key: 'overlay', label: 'Overlay' },
+      ])));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Pixel coordinates. Background text scrolls with the scene; overlay text stays put on '
+        + 'the screen. Up to 4 pieces of text at once — redrawing at the same spot replaces it.'));
+      break;
+    }
+    case 'SHOW_OVERLAY':
+      fields.append(el('label', {}, 'Fill colour', keySelect('fill', [
+        { key: 'black', label: 'Black' },
+        { key: 'white', label: 'White' },
+      ])));
+      fields.append(el('label', {}, 'X', numInput('x', 0, 16)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, 8)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Tile coordinates of the panel\'s top-left corner. It covers everything below and '
+        + 'right of there, so 0,8 hides it off the bottom of the screen.'));
+      break;
+    case 'HIDE_OVERLAY':
+      fields.append(el('span', { class: 'hint' }, 'Removes the overlay panel from the screen.'));
+      break;
+    case 'OVERLAY_MOVE':
+      fields.append(el('label', {}, 'X', numInput('x', 0, 16)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, 8)));
+      fields.append(el('label', {}, 'Speed', optionSelect('speed', OVERLAY_SPEEDS)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Slides the panel to a new corner; the script waits until it arrives.'));
+      break;
+    case 'OVERLAY_CUTOFF':
+      fields.append(el('label', {}, 'Y cutoff', numInput('y', 0, 64)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'The overlay and dialogue are only drawn above this scanline — set it to put an '
+        + 'overlay band across the top of the screen. 64 means no cutoff.'));
+      break;
     case 'END_SCRIPT':
       fields.append(el('span', { class: 'hint' }, 'Stops this script immediately.'));
       break;

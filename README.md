@@ -50,7 +50,7 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 |---|---|
 | **Scenes** | Paint tile maps — one Arduboy screen (Bitsy-style) or up to 4×4 screens that **scroll** to follow the player. Place actors, drag trigger areas, set the player start. Inspector edits the selected entity, its collision settings and each of its lifecycle scripts. |
 | **Tiles** | 1-bit 8×8 pixel editor with solid/walkable flag, flip/shift/invert tools. |
-| **Sprites** | Animated sprites (up to 4 frames; 8×8, 16×8, 8×16, 16×16) with live preview. |
+| **Sprites** | Animated sprites (up to 4 frames; 8×8, 16×8, 8×16, 16×16) with live preview, and named animation states — frame ranges like Idle or Walk that scripts can select. |
 | **Audio** | Compose songs and sound effects as ArduboyTones sequences. Note-name or raw-Hz entry, browser preview, retro presets, and import/export as `.song.json` or a `PROGMEM` C array. |
 | **Variables** | Central manager for all 32 byte variables, with live usage tracking showing every script that reads or writes each one. |
 | **Image Tool** | PNG → 1-bit converter (threshold + invert). Import as tiles or a sprite, or copy a `PROGMEM` C array in the standard Arduboy vertical-byte format. |
@@ -71,7 +71,10 @@ optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add
 of the default action), `Remove Button Script`, `Pause Script Until Input Pressed`,
 `If Joypad Input Held`, `If Actor At Position`, `If Actor Distance From Actor`,
 `Store Actor Direction In Variable`, `Store Actor Position In Variables`,
-`Comment`, `Event Group`, `Push / Pop / Pop All Scenes`, `Fade In / Out`, `Play Tone`,
+`Comment`, `Event Group`, `If Math Expression`, `Loop While Math Expression`, `Switch`,
+`Seed Random Number Generator`, `Set Actor Animation Frame / Speed / State`,
+`Show / Hide Overlay`, `Overlay Move To`, `Set Overlay Scanline Cutoff`, `Draw Text`,
+`Push / Pop / Pop All Scenes`, `Fade In / Out`, `Play Tone`,
 `Play / Stop Song`, `Set RGB LED` (analog PWM or digital on/off), `Save Game`, `Load Game`,
 `Save Exists → Var`, `Delete Save`, `Wait`, `Stop Script`.
 
@@ -103,6 +106,10 @@ compiler warns about — and skips — any event that would pause it.
 - Scripts attachable to any of the six buttons, optionally replacing the default action.
 - Collision groups, per-actor `On Hit` scripts, and a pool of 6 eight-directional projectiles.
 - Actor queries — position, straight-line distance and facing — that branch or write to variables.
+- Integer math expressions (`6 * $health`), compiled to RPN at build time and run on a tiny
+  stack machine, so the device never parses anything.
+- Named sprite animation states, with per-actor animation frame, speed and loop control.
+- A software overlay panel with a scanline cutoff, plus text drawn on the scene or the overlay.
 - Per-actor facing and movement speed; flicker and shake effects.
 - A scene stack — push a scene and pop back to the exact tile you left, with dithered fades.
 - RGB LED feedback, analog (PWM brightness) or digital (on/off).
@@ -133,6 +140,7 @@ A two-screen scrolling scene in the editor — green lines mark screen boundarie
 index.html, css/          app shell
 js/model.js               project data model, default assets, songs, demo game
 js/compiler.js            script → bytecode compiler (shared by emulator & export)
+js/expression.js          math expression parser → RPN bytes, plus the reference evaluator
 js/emulator.js            browser play-test runtime (Arduboy twin)
 js/codegen.js             .ino generator (data + C++ engine)
 js/font5x7.js             Arduboy2's font, extracted for pixel-identical text
@@ -150,16 +158,30 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 166 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 241 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
-                                #   actor queries, comments and groups
-node tools/check_codegen.mjs    # generated sketches pass g++ -Wall -Wextra
+                                #   actor queries, expressions, switch, animation states, overlay
+node tools/check_codegen.mjs    # demo, blank and an all-features project all pass g++
 tools/build_avr.sh              # optional: full ATmega32u4 build (needs gcc-avr, avr-libc)
+PROJECT=all-features tools/build_avr.sh   # the worst case: a game using every subsystem
 ```
 
 The AVR build compiles the generated sketch against the unmodified Arduboy2 and ArduboyTones
-libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 24,102 bytes
-flash / 1,968 bytes RAM, against the ATmega32u4's ~28 KB usable flash and 2,560 bytes of RAM.
+libraries and the Arduino AVR core, linking a flashable `game.hex`.
+
+**Your game only carries the engine features it uses.** Optional subsystems — overlay, draw
+text, projectiles, collisions, expressions, scene stack, fades, save games, songs, menus,
+button scripts, per-frame scripts — are stripped from the generated sketch when nothing in the
+project scripts them, so they cost neither flash nor RAM. Against the ATmega32u4's ~28 KB of
+usable flash and 2,560 bytes of RAM:
+
+| Project | Flash | RAM |
+|---|---|---|
+| Key Quest demo | 22,920 | 1,940 |
+| Every subsystem at once | 26,358 | 2,038 |
+
+The optional subsystems come to about 3.4 KB of flash in total, so a game reaching for all of
+them has roughly 2.3 KB left for its own scenes and art.
 
 ## Offline / desktop builds
 
@@ -205,6 +227,7 @@ localStorage and can be saved to / loaded from JSON files.
 64 tiles · 32 sprites × 4 frames · 8 actors + 8 triggers per scene · 32 variables ·
 32 songs × 192 notes · 256 dialogue strings · 8 options per menu (~9 chars each) ·
 6 buttons with one attached script each · 6 projectiles in flight ·
+4 animation states per sprite · 8 Switch options · 4 pieces of drawn text ·
 8-deep scene stack · 3 collision groups plus the player ·
 scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene.
 

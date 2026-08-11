@@ -166,6 +166,10 @@ export function forEachEvent(events, fn) {
     for (const key of NESTED_EVENT_LISTS) {
       if (Array.isArray(ev[key])) forEachEvent(ev[key], fn);
     }
+    // Switch keeps a script per case rather than one nested list.
+    if (Array.isArray(ev.cases)) {
+      for (const c of ev.cases) forEachEvent(c.events, fn);
+    }
   }
 }
 
@@ -264,14 +268,24 @@ export function makeTile(name, rows, solid = false) {
 }
 
 export function makeSprite(name, frames, w = 8, h = 8) {
+  const f = frames && frames.length ? frames : [blankPixels(w, h)];
   return {
     id: uid('spr'),
     name,
     width: w,
     height: h,
-    frames: frames && frames.length ? frames : [blankPixels(w, h)],
+    frames: f,
+    // Named ranges of frames an actor can play. Every sprite has a Default
+    // state spanning all of them, so the picker is never empty.
+    states: [makeSpriteState('Default', 0, f.length - 1)],
   };
 }
+
+export function makeSpriteState(name, from, to) {
+  return { id: uid('state'), name, from, to };
+}
+
+export const MAX_SPRITE_STATES = 4;
 
 export function makeActor(name, spriteId, x, y) {
   return {
@@ -284,6 +298,7 @@ export function makeActor(name, spriteId, x, y) {
     animate: true,        // cycle frames
     facing: 'down',       // which way it points (drives Launch Projectile)
     speed: 1,             // pixels per frame; 0 = half speed
+    animSpeed: 20,        // frames between animation steps; 0 = frozen
     collisionGroup: 'none',
     collideWith: 0,       // bitmask of COLLIDE_TARGETS
     scripts: makeActorScripts(),
@@ -466,6 +481,22 @@ export function makeEvent(type) {
     };
     case 'STORE_ACTOR_DIR': return { id: uid('ev'), type, target: 'self', varId: '' };
     case 'STORE_ACTOR_POS': return { id: uid('ev'), type, target: 'self', varX: '', varY: '' };
+    case 'EXPR_IF':     return { id: uid('ev'), type, expression: '', then: [], else: [] };
+    case 'EXPR_LOOP':   return { id: uid('ev'), type, expression: '', events: [] };
+    case 'SEED_RNG':    return { id: uid('ev'), type };
+    case 'SWITCH':      return {
+      id: uid('ev'), type, varId: '',
+      cases: [{ value: 0, events: [] }, { value: 1, events: [] }],
+      else: [],
+    };
+    case 'SET_ANIM_FRAME': return { id: uid('ev'), type, target: 'self', frame: 0 };
+    case 'SET_ANIM_SPEED': return { id: uid('ev'), type, target: 'self', speed: 20 };
+    case 'SET_ANIM_STATE': return { id: uid('ev'), type, target: 'self', stateId: '', loop: true };
+    case 'SHOW_OVERLAY': return { id: uid('ev'), type, fill: 'black', x: 0, y: 0 };
+    case 'HIDE_OVERLAY': return { id: uid('ev'), type };
+    case 'OVERLAY_MOVE': return { id: uid('ev'), type, x: 0, y: 0, speed: 1 };
+    case 'OVERLAY_CUTOFF': return { id: uid('ev'), type, y: 0 };
+    case 'DRAW_TEXT':   return { id: uid('ev'), type, text: '', x: 1, y: 1, location: 'background' };
     case 'COMMENT':     return { id: uid('ev'), type, text: '' };
     case 'EVENT_GROUP': return { id: uid('ev'), type, label: '', events: [] };
     case 'END_SCRIPT':  return { id: uid('ev'), type };
@@ -485,6 +516,12 @@ export const EVENT_DEFS = [
   { type: 'POP_ALL_SCENES', label: 'Pop All Scenes',  group: 'Scene' },
   { type: 'FADE_IN',      label: 'Fade In',           group: 'Scene' },
   { type: 'FADE_OUT',     label: 'Fade Out',          group: 'Scene' },
+  { type: 'DRAW_TEXT',    label: 'Draw Text',         group: 'Overlay' },
+  { type: 'SHOW_OVERLAY', label: 'Show Overlay',      group: 'Overlay' },
+  { type: 'HIDE_OVERLAY', label: 'Hide Overlay',      group: 'Overlay' },
+  { type: 'OVERLAY_MOVE', label: 'Overlay Move To',   group: 'Overlay' },
+  { type: 'OVERLAY_CUTOFF', label: 'Set Overlay Scanline Cutoff', group: 'Overlay' },
+  { type: 'SEED_RNG',     label: 'Seed Random Number Generator', group: 'Random' },
   { type: 'SET_VAR',      label: 'Set Variable',      group: 'Variables' },
   { type: 'ADD_VAR',      label: 'Add To Variable',   group: 'Variables' },
   { type: 'IF_VAR',       label: 'If Variable…',      group: 'Variables' },
@@ -497,6 +534,9 @@ export const EVENT_DEFS = [
   { type: 'SET_ACTOR_DIR',   label: 'Set Actor Direction', group: 'Actors' },
   { type: 'SET_ACTOR_SPEED', label: 'Set Actor Movement Speed', group: 'Actors' },
   { type: 'ACTOR_EFFECT',    label: 'Actor Effects',     group: 'Actors' },
+  { type: 'SET_ANIM_FRAME',  label: 'Set Actor Animation Frame', group: 'Actors' },
+  { type: 'SET_ANIM_SPEED',  label: 'Set Actor Animation Speed', group: 'Actors' },
+  { type: 'SET_ANIM_STATE',  label: 'Set Actor Animation State', group: 'Actors' },
   { type: 'LAUNCH_PROJECTILE', label: 'Launch Projectile', group: 'Actors' },
   { type: 'ATTACH_SCRIPT', label: 'Attach Script To Button', group: 'Input' },
   { type: 'REMOVE_BUTTON_SCRIPT', label: 'Remove Button Script', group: 'Input' },
@@ -513,6 +553,9 @@ export const EVENT_DEFS = [
   { type: 'WAIT',         label: 'Wait',              group: 'Timing' },
   { type: 'END_SCRIPT',   label: 'Stop Script',       group: 'Timing' },
   { type: 'IF_ACTOR_AT',  label: 'If Actor At Position', group: 'Control Flow' },
+  { type: 'EXPR_IF',      label: 'If Math Expression', group: 'Control Flow' },
+  { type: 'EXPR_LOOP',    label: 'Loop While Math Expression', group: 'Control Flow' },
+  { type: 'SWITCH',       label: 'Switch',            group: 'Control Flow' },
   { type: 'IF_ACTOR_DISTANCE', label: 'If Actor Distance From Actor', group: 'Control Flow' },
   { type: 'COMMENT',      label: 'Comment',           group: 'Miscellaneous' },
   { type: 'EVENT_GROUP',  label: 'Event Group',       group: 'Miscellaneous' },
@@ -912,6 +955,17 @@ export function normalizeProject(p) {
   p.variables = p.variables || [];
   p.tiles = (p.tiles || []).slice(0, MAX_TILES);
   p.sprites = (p.sprites || []).slice(0, MAX_SPRITES);
+  for (const spr of p.sprites) {
+    // Projects saved before animation states existed have none.
+    spr.states = (spr.states || []).slice(0, MAX_SPRITE_STATES);
+    if (!spr.states.length) spr.states = [makeSpriteState('Default', 0, spr.frames.length - 1)];
+    const last = spr.frames.length - 1;
+    for (const st of spr.states) {
+      st.id = st.id || uid('state');
+      st.from = Math.max(0, Math.min(last, st.from | 0));
+      st.to = Math.max(st.from, Math.min(last, st.to | 0));
+    }
+  }
   p.songs = (p.songs || []).slice(0, MAX_SONGS);
   for (const s of p.songs) {
     s.notes = (s.notes || []).slice(0, MAX_SONG_NOTES).map((n) => ({
@@ -935,6 +989,7 @@ export function normalizeProject(p) {
       normalizeScripts(a, ACTOR_SCRIPT_SLOTS, { script: 'interact' });
       a.facing = DIRECTIONS.some((d) => d.key === a.facing) ? a.facing : 'down';
       a.speed = ACTOR_SPEEDS.some((s) => s.value === a.speed) ? a.speed : 1;
+      a.animSpeed = Number.isFinite(a.animSpeed) ? Math.max(0, Math.min(255, a.animSpeed | 0)) : 20;
       a.collisionGroup = COLLISION_GROUPS.some((g) => g.key === a.collisionGroup) ? a.collisionGroup : 'none';
       a.collideWith = Math.max(0, Math.min(15, a.collideWith | 0));
     }

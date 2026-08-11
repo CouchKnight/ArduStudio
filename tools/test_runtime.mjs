@@ -7,9 +7,12 @@
 
 import {
   makeDemoProject, makeEvent as makeEventOfType, normalizeProject,
-  makeActor as makeActorOfType,
+  makeActor as makeActorOfType, makeSpriteState as makeSpriteStateOfType,
 } from '../js/model.js';
 import { compileProject } from '../js/compiler.js';
+import { generateIno } from '../js/codegen.js';
+import { compileExpression, evalExpression } from '../js/expression.js';
+import { makeAllFeaturesProject } from './all_features_project.mjs';
 import { Emulator, BTN, memoryStorage } from '../js/emulator.js';
 
 // Tap a button for one frame, then release it — justPressed only fires on the
@@ -1061,6 +1064,315 @@ console.log('— comments and event groups —');
   const c = compileProject(proj);
   assert(c.warnings.length === 1 && c.warnings[0].includes('On Update'),
     `a blocking event inside a group in On Update is still refused (${c.warnings.join('; ')})`);
+}
+
+console.log('— math expressions —');
+{
+  const vi = new Map([['health', 0], ['gold', 1]]);
+  const vars = new Uint8Array(32);
+  vars[0] = 6; vars[1] = 10;
+  const run = (src) => {
+    const b = compileExpression(src, vi);
+    return evalExpression(b, 0, b.length, vars, () => 3);
+  };
+  assert(run('6 * $health') === 36, 'multiplication and a variable read');
+  assert(run('1 + 2 * 3') === 7, 'multiplication binds tighter than addition');
+  assert(run('(1 + 2) * 3') === 9, 'parentheses override precedence');
+  assert(run('-$health + 10') === 4, 'unary minus');
+  assert(run('$health > 5 && $gold < 20') === 1, 'comparison and logical and');
+  assert(run('!$health') === 0, 'logical not');
+  assert(run('10 / 0') === 0, 'dividing by zero yields 0 rather than trapping');
+  assert(run('10 % 0') === 0, 'modulo by zero yields 0');
+  assert(run('min($health, $gold)') === 6 && run('max($health, $gold)') === 10, 'min and max');
+  assert(run('abs(0 - 5)') === 5, 'abs');
+  assert(run('rnd(10)') === 3, 'rnd draws from the generator');
+  // Intermediates are int16, so a big product wraps rather than staying exact.
+  assert(run('200 * 200') === -25536, `int16 arithmetic wraps like the device (${run('200 * 200')})`);
+
+  for (const [bad, why] of [
+    ['6 * ', 'ends too early'],
+    ['$nope', 'unknown variable'],
+    ['foo(1)', 'unknown function'],
+    ['1 +* 2', 'stray operator'],
+    ['((1)', 'unclosed bracket'],
+    ['', 'empty'],
+  ]) {
+    let threw = false;
+    try { compileExpression(bad, vi); } catch { threw = true; }
+    assert(threw, `rejects ${why}: ${JSON.stringify(bad)}`);
+  }
+}
+
+{
+  // A bad expression is a warning naming the script, never a thrown export.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('EXPR_IF'), { expression: '$nosuchvar + 1', then: [], else: [] }),
+  ];
+  let c = null;
+  try { c = compileProject(proj); } catch { /* left null: that is the failure */ }
+  assert(c !== null, 'a bad expression does not break the export');
+  assert(c.warnings.some((w) => w.includes('nosuchvar')), 'the warning names the unknown variable');
+}
+
+{
+  // If / Loop over the real bytecode, not just the parser.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SET_VAR'), { varId: v.id, value: 3 }),
+    Object.assign(makeEventOfType('EXPR_LOOP'), {
+      expression: `$${v.name} > 0`,
+      events: [Object.assign(makeEventOfType('ADD_VAR'), { varId: v.id, delta: -1 })],
+    }),
+    Object.assign(makeEventOfType('EXPR_IF'), {
+      expression: `$${v.name} == 0`,
+      then: [Object.assign(makeEventOfType('SET_VAR'), { varId: v.id, value: 99 })],
+      else: [Object.assign(makeEventOfType('SET_VAR'), { varId: v.id, value: 1 })],
+    }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `expression events compile clean (${c.warnings.join('; ')})`);
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.vars[0] === 99, `the loop counted down and the If took the true branch (${e.vars[0]})`);
+}
+
+{
+  // A runaway loop stalls its own script but must not wedge the frame loop.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('EXPR_LOOP'), { expression: '1', events: [] }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0, false);
+  const before = e.frame;
+  for (let i = 0; i < 10; i++) { e.setButtons(0); e.step(); }
+  assert(e.frame === before + 10, 'frames keep advancing through a runaway loop');
+  assert(e.script.active, 'the runaway script is still stuck, as documented');
+}
+
+{
+  // A loop cannot live in an On Update slot, which must finish in one frame.
+  const proj = makeDemoProject();
+  proj.scenes[0].actors[0].scripts.update = [
+    Object.assign(makeEventOfType('EXPR_LOOP'), { expression: '1', events: [] }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.some((w) => w.includes('On Update')), 'a loop in On Update is refused');
+}
+
+console.log('— Seed Random Number Generator —');
+{
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [makeEventOfType('SEED_RNG')];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  const before = e.rngState;
+  runActorScript(e, 0);
+  assert(e.rngState !== before, 'seeding changes the generator state');
+}
+
+console.log('— Switch —');
+{
+  // Each run needs its own project, so build the Switch from that project's
+  // own variable rather than closing over another one's id.
+  const mk = (id) => Object.assign(makeEventOfType('SWITCH'), {
+    varId: id,
+    cases: [
+      { value: 0, events: [Object.assign(makeEventOfType('SET_VAR'), { varId: id, value: 10 })] },
+      { value: 5, events: [Object.assign(makeEventOfType('SET_VAR'), { varId: id, value: 20 })] },
+    ],
+    else: [Object.assign(makeEventOfType('SET_VAR'), { varId: id, value: 30 })],
+  });
+  for (const [start, want, what] of [[0, 10, 'first case'], [5, 20, 'second case'], [7, 30, 'else']]) {
+    const p2 = makeDemoProject();
+    p2.scenes[0].scripts.init = [];
+    p2.scenes[0].actors[0].scripts.interact = [mk(p2.variables[0].id)];
+    const c = compileProject(p2);
+    assert(c.warnings.length === 0, `Switch compiles clean (${c.warnings.join('; ')})`);
+    const e = new Emulator(c, { onTone: () => {} });
+    e.vars[0] = start;
+    runActorScript(e, 0);
+    assert(e.vars[0] === want, `value ${start} takes the ${what} (${e.vars[0]})`);
+  }
+}
+
+{
+  // Two cases testing the same value is a mistake worth naming.
+  const proj = makeDemoProject();
+  proj.scenes[0].actors[0].scripts.interact = [Object.assign(makeEventOfType('SWITCH'), {
+    varId: proj.variables[0].id,
+    cases: [{ value: 1, events: [] }, { value: 1, events: [] }],
+    else: [],
+  })];
+  assert(compileProject(proj).warnings.some((w) => w.includes('more than once')),
+    'a duplicated Switch value warns');
+}
+
+console.log('— animation states, frame and speed —');
+{
+  const proj = makeDemoProject();
+  const spr = proj.sprites[1];
+  assert(spr.states.length === 1 && spr.states[0].name === 'Default',
+    'every sprite starts with a Default state covering all frames');
+  // Two frames in the demo villager: make a one-frame "idle" state.
+  spr.states.push(makeSpriteStateOfType('Idle', 0, 0));
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SET_ANIM_STATE'), { target: 'self', stateId: spr.states[1].id, loop: false }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `Set Actor Animation State compiles clean (${c.warnings.join('; ')})`);
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  const a = e.actors[0];
+  assert(a.animFrom === 0 && a.animTo === 0, `the state set the frame range (${a.animFrom}-${a.animTo})`);
+  assert(a.animLoop === false, 'the loop flag came through');
+  // A single-frame state never advances.
+  for (let i = 0; i < 60; i++) { e.setButtons(0); e.step(); }
+  assert(a.frame === 0, `a one-frame state stays on its frame (${a.frame})`);
+}
+
+{
+  // A non-looping multi-frame state stops on its last frame.
+  const proj = makeDemoProject();
+  const spr = proj.sprites[1];
+  spr.states.push(makeSpriteStateOfType('Once', 0, 1));
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SET_ANIM_SPEED'), { target: 'self', speed: 5 }),
+    Object.assign(makeEventOfType('SET_ANIM_STATE'), { target: 'self', stateId: spr.states[1].id, loop: false }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  for (let i = 0; i < 60; i++) { e.setButtons(0); e.step(); }
+  assert(e.actors[0].frame === 1, `a non-looping state stops on its last frame (${e.actors[0].frame})`);
+}
+
+{
+  // Speed None freezes the actor; Set Actor Animation Frame jumps directly.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SET_ANIM_SPEED'), { target: 'self', speed: 0 }),
+    Object.assign(makeEventOfType('SET_ANIM_FRAME'), { target: 'self', frame: 1 }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.actors[0].frame === 1, 'Set Actor Animation Frame jumped to frame 1');
+  for (let i = 0; i < 120; i++) { e.setButtons(0); e.step(); }
+  assert(e.actors[0].frame === 1, 'speed None froze the animation there');
+}
+
+{
+  // A frame past the end of the sprite is clamped, not left dangling.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SET_ANIM_FRAME'), { target: 'self', frame: 99 }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  const frames = e.g.sprites[e.actors[0].spriteIdx].frames.length;
+  assert(e.actors[0].frame === frames - 1, `an out-of-range frame clamps (${e.actors[0].frame})`);
+}
+
+console.log('— overlay and Draw Text —');
+{
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SHOW_OVERLAY'), { fill: 'black', x: 0, y: 4 }),
+    Object.assign(makeEventOfType('DRAW_TEXT'), { text: 'HI', x: 4, y: 36, location: 'overlay' }),
+    Object.assign(makeEventOfType('DRAW_TEXT'), { text: 'MAP', x: 8, y: 8, location: 'background' }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `overlay events compile clean (${c.warnings.join('; ')})`);
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.overlay.on && e.overlay.py === 32, `the overlay showed at y=32 (${e.overlay.py})`);
+  assert(e.drawnText.length === 2, `both pieces of text are live (${e.drawnText.length})`);
+
+  // The panel really does black out the screen below its corner.
+  e.setButtons(0); e.step();
+  const belowLit = e.fb.slice(40 * 128, 41 * 128).some((v) => v);
+  const aboveLit = e.fb.slice(8 * 128, 9 * 128).some((v) => v);
+  assert(aboveLit, 'the scene still draws above the overlay');
+  assert(belowLit, 'the overlay text draws on top of the panel');
+}
+
+{
+  // Redrawing at the same spot replaces rather than filling the table.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  const at = (text) => Object.assign(makeEventOfType('DRAW_TEXT'), { text, x: 0, y: 0, location: 'background' });
+  proj.scenes[0].actors[0].scripts.interact = [at('one'), at('two'), at('three')];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.drawnText.length === 1, `the same slot was reused (${e.drawnText.length})`);
+  assert(e.g.strings[e.drawnText[0].strIdx] === 'three', 'and holds the latest text');
+}
+
+{
+  // Overlay Move To blocks the script until the panel arrives.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SHOW_OVERLAY'), { fill: 'black', x: 0, y: 8 }),
+    Object.assign(makeEventOfType('OVERLAY_MOVE'), { x: 0, y: 0, speed: 2 }),
+    Object.assign(makeEventOfType('SET_VAR'), { varId: v.id, value: 7 }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0, false);
+  e.setButtons(0); e.step();
+  assert(e.vars[0] !== 7, 'the script waits while the overlay slides');
+  for (let i = 0; i < 60; i++) { e.setButtons(0); e.step(); }
+  assert(e.overlay.py === 0, `the overlay arrived (${e.overlay.py})`);
+  assert(e.vars[0] === 7, 'and the script resumed');
+}
+
+{
+  // The scanline cutoff clips the overlay, and hiding removes it entirely.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SHOW_OVERLAY'), { fill: 'white', x: 0, y: 0 }),
+    Object.assign(makeEventOfType('OVERLAY_CUTOFF'), { y: 16 }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  e.setButtons(0); e.step();
+  assert(e.fb.slice(8 * 128, 9 * 128).every((v) => v === 1), 'a white overlay fills above the cutoff');
+  assert(e.fb.slice(20 * 128, 21 * 128).some((v) => v === 0), 'and stops at the cutoff line');
+}
+
+console.log('— features are only compiled when used —');
+{
+  const bare = compileProject(makeDemoProject());
+  assert(bare.features.OVERLAY === false, 'the demo needs no overlay code');
+  assert(bare.features.EXPR === false, 'the demo needs no expression evaluator');
+  assert(bare.features.PROJECTILES === false, 'the demo needs no projectile pool');
+
+  const { ino: bareIno } = generateIno(makeDemoProject());
+  assert(!bareIno.includes('evalExpression'), 'the expression evaluator is absent from the sketch');
+  assert(!bareIno.includes('drawOverlay'), 'the overlay renderer is absent from the sketch');
+  assert(!bareIno.includes('//#IF'), 'no feature markers leak into the generated sketch');
+
+  const full = makeAllFeaturesProject();
+  const compiledFull = compileProject(full);
+  for (const key of ['OVERLAY', 'EXPR', 'SWITCH', 'PROJECTILES', 'COLLISIONS', 'SAVES', 'MENUS',
+    'BUTTON_SCRIPTS', 'SCENE_STACK', 'FADE', 'LED', 'EFFECTS', 'UPDATE_SCRIPTS']) {
+    assert(compiledFull.features[key] === true, `the all-features project uses ${key}`);
+  }
+  const { ino: fullIno } = generateIno(full);
+  assert(fullIno.includes('evalExpression') && fullIno.includes('drawOverlay'),
+    'and its sketch contains those subsystems');
+  assert(fullIno.length > bareIno.length, `using everything costs more sketch (${bareIno.length} -> ${fullIno.length})`);
 }
 
 console.log('— project migration —');
