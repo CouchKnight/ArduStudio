@@ -60,7 +60,8 @@ directions, or in whatever direction the launcher is currently facing. Give it a
 pixels per frame, a lifetime in frames, and the collision groups it should hit. It also dies
 on a solid tile. <b>Six</b> can be in flight at once; a seventh shot is dropped.</p>
 <p class="hint">Aim it with <b>Set Actor Direction</b>, which is also what the actor's
-<i>Facing</i> field in the inspector sets.</p>
+<i>Facing</i> field in the inspector sets — and what <b>Store Actor Direction In Variable</b>
+reads back.</p>
 
 <h2>Actor movement and effects</h2>
 <ul>
@@ -195,6 +196,34 @@ key pickup does. The Play tab shows a live LED dot beside the screen.</p>
 <p class="hint">In the browser the save lives in localStorage and persists between play sessions —
 use <b>🗑 Wipe save</b> on the Play tab to test a fresh start. Note that scene changes made with
 <b>Set Tile</b> are <i>not</i> saved; drive anything that must persist from a variable.</p>
+
+<h2>Asking about actors</h2>
+<p>Four events read an actor's state, and each of them can target the <b>player</b> as well as
+an actor in the scene.</p>
+<ul>
+  <li><b>If Actor At Position</b> — branches on whether an actor is standing on a given tile.</li>
+  <li><b>If Actor Distance From Actor</b> — branches on how far one actor is from another, in
+      tiles. The distance is straight-line, so an actor 3 tiles across and 4 down is 5 away,
+      not 7. Both events check once and carry straight on; neither waits.</li>
+  <li><b>Store Actor Direction In Variable</b> — writes which way an actor faces:
+      <code>Down 0</code>, <code>Right 1</code>, <code>Up 2</code>, <code>Left 3</code>.</li>
+  <li><b>Store Actor Position In Variables</b> — writes an actor's tile X and Y into two
+      variables. Use two <i>different</i> variables; the exporter warns you if you don't.</li>
+</ul>
+<p class="hint">These are what a chase turns into: an <b>On Update</b> script that tests
+<i>If Actor Distance From Actor</i> against the player and moves the actor when it is close.</p>
+
+<h2>Keeping scripts readable</h2>
+<ul>
+  <li><b>Comment</b> — notes to yourself. It does nothing in the game and costs no space on
+      the device. Whatever you type becomes the block's title, so a collapsed comment still
+      reads as a heading for the section under it.</li>
+  <li><b>Event Group</b> — folds a run of events into one block, optionally named. It is
+      purely organisational: the events inside compile exactly as if the group were not
+      there.</li>
+</ul>
+<p>Every event block collapses with the <b>▾</b> button in its corner, which is how you keep
+a long script navigable.</p>
 
 <h2>Variables</h2>
 <p>The <b>Variables</b> tab is the single place to manage all 32 byte variables. Each row shows every

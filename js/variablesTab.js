@@ -15,15 +15,25 @@ function collectUsages(project) {
   };
   const HOW = {
     SET_VAR: 'set', ADD_VAR: 'add', IF_VAR: 'if', SAVE_CHECK: 'save-check',
+    STORE_ACTOR_DIR: 'store direction',
   };
+  const BRANCHING = ['IF_VAR', 'IF_INPUT', 'IF_ACTOR_AT', 'IF_ACTOR_DISTANCE'];
   const walk = (events, where) => {
     for (const ev of events || []) {
       if (HOW[ev.type]) add(ev.varId, where, HOW[ev.type]);
       // Menus write their result into a variable too.
       if (ev.type === 'MENU' || ev.type === 'CHOICE') add(ev.varId, where, 'menu');
+      // Store Actor Position writes two variables rather than one.
+      if (ev.type === 'STORE_ACTOR_POS') {
+        add(ev.varX, where, 'store x');
+        add(ev.varY, where, 'store y');
+      }
       // Recurse into every kind of nested script list.
-      if (ev.type === 'IF_VAR' || ev.type === 'IF_INPUT') { walk(ev.then, where); walk(ev.else, where); }
+      if (BRANCHING.includes(ev.type)) { walk(ev.then, where); walk(ev.else, where); }
       if (ev.type === 'ATTACH_SCRIPT') walk(ev.script, `${where} → ${String(ev.button).toUpperCase()} button`);
+      if (ev.type === 'EVENT_GROUP') {
+        walk(ev.events, ev.label ? `${where} → ${ev.label}` : where);
+      }
     }
   };
   for (const sc of project.scenes) {

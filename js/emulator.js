@@ -13,6 +13,7 @@ import {
   MENU_LAST_IS_ZERO, MENU_CANCEL_B, MENU_LAYOUT_DIALOGUE,
   ATTACH_OVERRIDE, NUM_BUTTONS,
   PROJECTILE_SRC_SELF, PROJECTILE_SRC_PLAYER,
+  ACTOR_REF_SELF, ACTOR_REF_PLAYER,
 } from './compiler.js';
 import { FONT5X7 } from './font5x7.js';
 
@@ -46,6 +47,18 @@ const FACING_TO_PROJ_DIR = [];
 for (const d of DIRECTIONS) {
   const match = PROJECTILE_DIRS.find((p) => p.dx === d.dx && p.dy === d.dy);
   FACING_TO_PROJ_DIR[d.code] = match ? match.code : 0;
+}
+
+// Comparison operators, in the order the CMP table in the compiler assigns.
+function compare(cmp, a, b) {
+  switch (cmp) {
+    case 0: return a === b;
+    case 1: return a !== b;
+    case 2: return a < b;
+    case 3: return a > b;
+    case 4: return a <= b;
+    default: return a >= b;
+  }
 }
 
 // Save-game layout (matches the C++ engine's EEPROM block):
@@ -453,6 +466,32 @@ export class Emulator {
     }
   }
 
+  // ------------------------------------------------- actor reference lookups
+
+  // Tile position of an actor reference, or null when it names nothing.
+  // 0xFF resolves to the running script's own actor, 0xFE to the player.
+  refTile(ref, self) {
+    if (ref === ACTOR_REF_PLAYER) {
+      return { x: Math.round(this.player.px / TILE), y: Math.round(this.player.py / TILE) };
+    }
+    const idx = ref === ACTOR_REF_SELF ? self : ref;
+    const a = this.actors[idx];
+    if (!a) return null;
+    return { x: Math.round(a.px / TILE), y: Math.round(a.py / TILE) };
+  }
+
+  // Facing code of an actor reference. The player has no stored facing, only
+  // the direction it last walked, so derive it from that.
+  refFacing(ref, self) {
+    if (ref === ACTOR_REF_PLAYER) {
+      const d = DIRECTIONS.find((v) => v.dx === this.player.fx && v.dy === this.player.fy);
+      return d ? d.code : 0;
+    }
+    const idx = ref === ACTOR_REF_SELF ? self : ref;
+    const a = this.actors[idx];
+    return a ? a.facing : 0;
+  }
+
   // ------------------------------------------------------------- collisions
 
   spriteSize(idx) {
@@ -662,10 +701,7 @@ export class Emulator {
           const v = this.vars[code[s.pc++]];
           const cmp = code[s.pc++], val = code[s.pc++];
           const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
-          const pass = cmp === 0 ? v === val : cmp === 1 ? v !== val :
-            cmp === 2 ? v < val : cmp === 3 ? v > val :
-            cmp === 4 ? v <= val : v >= val;
-          if (!pass) s.pc = elseAddr;
+          if (!compare(cmp, v, val)) s.pc = elseAddr;
           break;
         }
         case OP.JUMP: { s.pc = code[s.pc] | (code[s.pc + 1] << 8); break; }
@@ -862,6 +898,41 @@ export class Emulator {
           this.startFade(op === OP.FADE_OUT ? FADE_LEVELS : 0, speed);
           s.waitFade = true;
           return; // block until the fade finishes
+        }
+        case OP.IF_ACTOR_AT: {
+          const ref = code[s.pc++];
+          const x = code[s.pc++], y = code[s.pc++];
+          const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          const at = this.refTile(ref, s.self);
+          if (!at || at.x !== x || at.y !== y) s.pc = elseAddr;
+          break;
+        }
+        case OP.IF_ACTOR_DISTANCE: {
+          const ref = code[s.pc++];
+          const cmp = code[s.pc++];
+          const distSq = code[s.pc++] | (code[s.pc++] << 8);
+          const fromRef = code[s.pc++];
+          const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          const a = this.refTile(ref, s.self);
+          const b = this.refTile(fromRef, s.self);
+          let pass = false;
+          if (a && b) {
+            const dx = a.x - b.x, dy = a.y - b.y;
+            pass = compare(cmp, dx * dx + dy * dy, distSq);
+          }
+          if (!pass) s.pc = elseAddr;
+          break;
+        }
+        case OP.STORE_ACTOR_DIR: {
+          const ref = code[s.pc++], v = code[s.pc++];
+          this.vars[v] = this.refFacing(ref, s.self);
+          break;
+        }
+        case OP.STORE_ACTOR_POS: {
+          const ref = code[s.pc++], vx = code[s.pc++], vy = code[s.pc++];
+          const at = this.refTile(ref, s.self);
+          if (at) { this.vars[vx] = at.x; this.vars[vy] = at.y; }
+          break;
         }
         case OP.MENU: {
           const varIdx = code[s.pc++];

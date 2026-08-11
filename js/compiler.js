@@ -49,7 +49,20 @@ export const OP = {
   POP_ALL_SCENES: 33, // fadeSpeed
   FADE_IN: 34,      // fadeSpeed
   FADE_OUT: 35,     // fadeSpeed
+  IF_ACTOR_AT: 36,  // actorIdx, x, y, elseAddrLo, elseAddrHi
+  // actorIdx, cmp, distSqLo, distSqHi, fromIdx, elseAddrLo, elseAddrHi.
+  // Distance is compared squared so neither runtime needs a square root.
+  IF_ACTOR_DISTANCE: 37,
+  STORE_ACTOR_DIR: 38, // actorIdx, varIdx
+  STORE_ACTOR_POS: 39, // actorIdx, varXIdx, varYIdx
 };
+
+// An actor reference in the bytecode: a scene actor index, or one of these.
+export const ACTOR_REF_SELF = 0xff;
+export const ACTOR_REF_PLAYER = 0xfe;
+// The largest distance an If Actor Distance comparison can carry. Squaring it
+// must still fit the uint16 the bytecode stores.
+export const MAX_ACTOR_DISTANCE = 255;
 
 // Events that stop a script mid-flight. They are meaningless in a slot that
 // runs to completion every frame (On Update), so the compiler drops them there
@@ -153,14 +166,17 @@ export function compileProject(project) {
   const emit = (...bytes) => { for (const b of bytes) code.push(b & 0xff); };
   const emitU16 = (v) => { code.push(v & 0xff, (v >> 8) & 0xff); };
 
-  // Resolve an event's actor target to an index, or 0xFF for "self".
-  // Returns -1 when the target is missing, having already warned.
-  function actorTarget(ev, scene, ctx, label) {
-    if (!ev.target || ev.target === 'self') return 0xff;
-    const ai = scene ? scene.actors.findIndex((a) => a.id === ev.target) : -1;
+  // Resolve an actor reference — "self", "player", or a scene actor id — to the
+  // byte the bytecode carries. Returns -1 when it names nothing, having warned.
+  function actorRef(value, scene, ctx, label) {
+    if (!value || value === 'self') return ACTOR_REF_SELF;
+    if (value === 'player') return ACTOR_REF_PLAYER;
+    const ai = scene ? scene.actors.findIndex((a) => a.id === value) : -1;
     if (ai < 0) { warnings.push(`${ctx}: ${label} target not in this scene — skipped`); return -1; }
     return ai;
   }
+
+  const actorTarget = (ev, scene, ctx, label) => actorRef(ev.target, scene, ctx, label);
 
   // Fade speed: 0 is fastest. Stored as frames spent on each dither step.
   const fadeSpeed = (v) => Math.max(0, Math.min(7, v === undefined ? 2 : v | 0));
@@ -408,6 +424,68 @@ export function compileProject(project) {
           break;
         case 'FADE_OUT':
           emit(OP.FADE_OUT, fadeSpeed(ev.fade));
+          break;
+        case 'IF_ACTOR_AT': {
+          const idx = actorTarget(ev, scene, ctx, 'If Actor At Position');
+          if (idx < 0) break;
+          emit(OP.IF_ACTOR_AT, idx, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)));
+          const elsePatch = code.length; emitU16(0);
+          compileEvents(ev.then, scene, ctx, nonBlocking);
+          emit(OP.JUMP);
+          const endPatch = code.length; emitU16(0);
+          patchU16(code, elsePatch, code.length);
+          compileEvents(ev.else, scene, ctx, nonBlocking);
+          patchU16(code, endPatch, code.length);
+          break;
+        }
+        case 'IF_ACTOR_DISTANCE': {
+          const idx = actorTarget(ev, scene, ctx, 'If Actor Distance From Actor');
+          if (idx < 0) break;
+          const from = actorRef(ev.from, scene, ctx, 'If Actor Distance From Actor "from"');
+          if (from < 0) break;
+          // Squared, so the runtimes compare without a square root. Ordering is
+          // preserved because a distance is never negative.
+          const d = Math.max(0, Math.min(MAX_ACTOR_DISTANCE, ev.distance | 0));
+          const dSq = d * d;
+          emit(OP.IF_ACTOR_DISTANCE, idx, CMP[ev.cmp] ?? 0, dSq & 0xff, (dSq >> 8) & 0xff, from);
+          const elsePatch = code.length; emitU16(0);
+          compileEvents(ev.then, scene, ctx, nonBlocking);
+          emit(OP.JUMP);
+          const endPatch = code.length; emitU16(0);
+          patchU16(code, elsePatch, code.length);
+          compileEvents(ev.else, scene, ctx, nonBlocking);
+          patchU16(code, endPatch, code.length);
+          break;
+        }
+        case 'STORE_ACTOR_DIR': {
+          const idx = actorTarget(ev, scene, ctx, 'Store Actor Direction');
+          if (idx < 0) break;
+          const v = varIndex.get(ev.varId);
+          if (v === undefined) { warnings.push(`${ctx}: Store Actor Direction has no variable selected — skipped`); break; }
+          emit(OP.STORE_ACTOR_DIR, idx, v);
+          break;
+        }
+        case 'STORE_ACTOR_POS': {
+          const idx = actorTarget(ev, scene, ctx, 'Store Actor Position');
+          if (idx < 0) break;
+          const vx = varIndex.get(ev.varX);
+          const vy = varIndex.get(ev.varY);
+          if (vx === undefined || vy === undefined) {
+            warnings.push(`${ctx}: Store Actor Position needs both an X and a Y variable — skipped`);
+            break;
+          }
+          if (vx === vy) {
+            warnings.push(`${ctx}: Store Actor Position writes X and Y into the same variable — Y will overwrite X`);
+          }
+          emit(OP.STORE_ACTOR_POS, idx, vx, vy);
+          break;
+        }
+        // Editor-only: a comment carries no behaviour and emits nothing.
+        case 'COMMENT':
+          break;
+        // Purely organisational — its children compile straight into the parent.
+        case 'EVENT_GROUP':
+          compileEvents(ev.events, scene, ctx, nonBlocking);
           break;
         case 'END_SCRIPT':
           emit(OP.END);

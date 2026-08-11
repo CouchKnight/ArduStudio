@@ -6,6 +6,10 @@ import {
   makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS,
   DIRECTIONS, PROJECTILE_DIRS, ACTOR_SPEEDS, ACTOR_EFFECTS, COLLIDE_TARGETS,
 } from './model.js';
+import { MAX_ACTOR_DISTANCE } from './compiler.js';
+
+// Direction codes by name, for the Store Actor Direction hint.
+const DIR_CODES = Object.fromEntries(DIRECTIONS.map((d) => [d.key, d.code]));
 
 const CMP_OPTIONS = ['==', '!=', '<', '>', '<=', '>='];
 
@@ -82,10 +86,19 @@ function collideChecks(mask, onChange) {
   return row;
 }
 
-function labelFor(type) {
-  const def = EVENT_DEFS.find((d) => d.type === type);
-  return def ? def.label : type;
+// Header text for an event card. A comment shows its own text and a group its
+// name, so both stay readable once collapsed.
+function labelFor(ev) {
+  const def = EVENT_DEFS.find((d) => d.type === ev.type);
+  const fallback = def ? def.label : ev.type;
+  if (ev.type === 'COMMENT') return String(ev.text || '').trim() || fallback;
+  if (ev.type === 'EVENT_GROUP') return String(ev.label || '').trim() || fallback;
+  return fallback;
 }
+
+// Collapsed cards are remembered per event id, so re-rendering the list (which
+// happens on nearly every edit) does not spring them all open again.
+const collapsed = new Set();
 
 // app: { project, save() }, scene: scene the script lives in (for actor targets)
 export function renderScriptEditor(app, scene, events, onChange) {
@@ -113,8 +126,18 @@ function renderEventCard(app, scene, list, index, rerender) {
   const ev = list[index];
   const card = el('div', { class: `event-card ev-${ev.type}` });
 
+  const isCollapsed = collapsed.has(ev.id);
+  if (isCollapsed) card.classList.add('collapsed');
+
   const head = el('div', { class: 'event-head' },
-    el('span', { class: 'ev-label' }, labelFor(ev.type)),
+    el('button', {
+      class: 'mini', title: isCollapsed ? 'Expand' : 'Collapse',
+      onclick: () => {
+        if (isCollapsed) collapsed.delete(ev.id); else collapsed.add(ev.id);
+        rerender();
+      },
+    }, isCollapsed ? '▸' : '▾'),
+    el('span', { class: 'ev-label' }, labelFor(ev)),
     el('button', {
       class: 'mini', title: 'Move up',
       onclick: () => { if (index > 0) { [list[index - 1], list[index]] = [list[index], list[index - 1]]; rerender(); } },
@@ -129,6 +152,7 @@ function renderEventCard(app, scene, list, index, rerender) {
     }, '✕'),
   );
   card.append(head);
+  if (isCollapsed) return card;
 
   const fields = el('div', { class: 'event-fields' });
   card.append(fields);
@@ -516,6 +540,71 @@ function renderEventCard(app, scene, list, index, rerender) {
         `Dithers the screen ${ev.type === 'FADE_OUT' ? 'to black' : 'back in'}; the script waits for it to finish. `
         + 'Dialogue and menus stay readable through a fade.'));
       break;
+    case 'IF_ACTOR_AT': {
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
+      fields.append(el('label', {}, 'X', numInput('x', 0, scene ? sceneCols(scene) - 1 : 63)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, scene ? sceneRows(scene) - 1 : 31)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Tile coordinates, checked once — it never waits.'));
+      card.append(el('div', { class: 'event-branch-label' }, 'True'));
+      card.append(renderScriptEditor(app, scene, ev.then, app.save));
+      card.append(el('div', { class: 'event-branch-label' }, 'False'));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save));
+      break;
+    }
+    case 'IF_ACTOR_DISTANCE': {
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
+      const cmpSel = el('select', { onchange: () => { ev.cmp = cmpSel.value; changed(); } });
+      for (const c of CMP_OPTIONS) cmpSel.append(el('option', { value: c, selected: ev.cmp === c }, c));
+      fields.append(el('label', {}, 'Comparison', cmpSel));
+      fields.append(el('label', {}, 'Distance', numInput('distance', 0, MAX_ACTOR_DISTANCE)));
+      fields.append(el('label', {}, 'From', actorSelect('from', [['player', 'Player']])));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Straight-line distance in tiles. Checked once — it never waits.'));
+      card.append(el('div', { class: 'event-branch-label' }, 'True'));
+      card.append(renderScriptEditor(app, scene, ev.then, app.save));
+      card.append(el('div', { class: 'event-branch-label' }, 'False'));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save));
+      break;
+    }
+    case 'STORE_ACTOR_DIR':
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        `Down: ${DIR_CODES.down} · Right: ${DIR_CODES.right} · Up: ${DIR_CODES.up} · Left: ${DIR_CODES.left}`));
+      break;
+    case 'STORE_ACTOR_POS':
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
+      fields.append(el('label', {}, 'X', varSelect('varX')));
+      fields.append(el('label', {}, 'Y', varSelect('varY')));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Tile coordinates. Use two different variables — the Y write would otherwise overwrite the X.'));
+      break;
+    case 'COMMENT': {
+      const ta = el('textarea', { rows: 2, spellcheck: false, value: ev.text, placeholder: 'Text…' });
+      // Live, so the header keeps up as you type — that is what makes a
+      // collapsed comment readable.
+      ta.addEventListener('input', () => {
+        ev.text = ta.value;
+        head.querySelector('.ev-label').textContent = labelFor(ev);
+        changed();
+      });
+      fields.append(el('label', { style: 'flex:1 1 100%' }, ta));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Notes for you only — a comment does nothing in the game and costs no space on the device.'));
+      break;
+    }
+    case 'EVENT_GROUP': {
+      const name = el('input', { type: 'text', value: ev.label, placeholder: 'Group name (optional)' });
+      name.addEventListener('input', () => {
+        ev.label = name.value;
+        head.querySelector('.ev-label').textContent = labelFor(ev);
+        changed();
+      });
+      fields.append(el('label', { style: 'flex:1 1 100%' }, name));
+      card.append(renderScriptEditor(app, scene, ev.events, app.save));
+      break;
+    }
     case 'END_SCRIPT':
       fields.append(el('span', { class: 'hint' }, 'Stops this script immediately.'));
       break;

@@ -69,7 +69,9 @@ optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add
 `Set Actor Sprite`, `Set Actor Direction`, `Set Actor Movement Speed`, `Actor Effects`
 (flicker / shake), `Launch Projectile`, `Attach Script To Button` (with optional override
 of the default action), `Remove Button Script`, `Pause Script Until Input Pressed`,
-`If Joypad Input Held`, `Push / Pop / Pop All Scenes`, `Fade In / Out`, `Play Tone`,
+`If Joypad Input Held`, `If Actor At Position`, `If Actor Distance From Actor`,
+`Store Actor Direction In Variable`, `Store Actor Position In Variables`,
+`Comment`, `Event Group`, `Push / Pop / Pop All Scenes`, `Fade In / Out`, `Play Tone`,
 `Play / Stop Song`, `Set RGB LED` (analog PWM or digital on/off), `Save Game`, `Load Game`,
 `Save Exists → Var`, `Delete Save`, `Wait`, `Stop Script`.
 
@@ -100,6 +102,7 @@ compiler warns about — and skips — any event that would pause it.
 - Menus and yes/no prompts that write the player's answer into a variable.
 - Scripts attachable to any of the six buttons, optionally replacing the default action.
 - Collision groups, per-actor `On Hit` scripts, and a pool of 6 eight-directional projectiles.
+- Actor queries — position, straight-line distance and facing — that branch or write to variables.
 - Per-actor facing and movement speed; flicker and shake effects.
 - A scene stack — push a scene and pop back to the exact tile you left, with dithered fades.
 - RGB LED feedback, analog (PWM brightness) or digital (on/off).
@@ -147,14 +150,15 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 145 assertions: playthrough, camera, saves, songs, menus, LED,
-                                #   input, lifecycle slots, collisions, projectiles, scene stack
+node tools/test_runtime.mjs     # 166 assertions: playthrough, camera, saves, songs, menus, LED,
+                                #   input, lifecycle slots, collisions, projectiles, scene stack,
+                                #   actor queries, comments and groups
 node tools/check_codegen.mjs    # generated sketches pass g++ -Wall -Wextra
 tools/build_avr.sh              # optional: full ATmega32u4 build (needs gcc-avr, avr-libc)
 ```
 
 The AVR build compiles the generated sketch against the unmodified Arduboy2 and ArduboyTones
-libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 23,242 bytes
+libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 24,102 bytes
 flash / 1,968 bytes RAM, against the ATmega32u4's ~28 KB usable flash and 2,560 bytes of RAM.
 
 ## Offline / desktop builds
@@ -188,6 +192,9 @@ Notes on the packaged apps:
 
 Both side panels resize by dragging the bar on their inner edge; the width is kept in
 localStorage, and double-clicking the bar restores the default.
+
+Every event block collapses with the ▾ button in its corner; `Comment` and `Event Group` put
+their own text in the block title, so a collapsed one still says what it is.
 
 Undo/redo covers every edit — <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> (or the
 ↶ ↷ buttons), 100 steps deep, with a drag-paint stroke counting as one step. Projects autosave to

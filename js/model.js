@@ -40,12 +40,14 @@ export function buttonIndex(key) { return Math.max(0, BUTTON_ORDER.indexOf(key))
 // Actor behaviour
 // ---------------------------------------------------------------------------
 
-// Which way an actor faces. The code is what goes into the bytecode.
+// Which way an actor faces. The code is what goes into the bytecode — and what
+// Store Actor Direction In Variable writes, so it follows the numbering game
+// logic is expected to branch on: Down 0, Right 1, Up 2, Left 3.
 export const DIRECTIONS = [
   { key: 'down', label: '▼ Down', code: 0, dx: 0, dy: 1 },
-  { key: 'up', label: '▲ Up', code: 1, dx: 0, dy: -1 },
-  { key: 'left', label: '◀ Left', code: 2, dx: -1, dy: 0 },
-  { key: 'right', label: '▶ Right', code: 3, dx: 1, dy: 0 },
+  { key: 'right', label: '▶ Right', code: 1, dx: 1, dy: 0 },
+  { key: 'up', label: '▲ Up', code: 2, dx: 0, dy: -1 },
+  { key: 'left', label: '◀ Left', code: 3, dx: -1, dy: 0 },
 ];
 export function directionCode(key) {
   const d = DIRECTIONS.find((x) => x.key === key);
@@ -55,11 +57,13 @@ export function directionCode(key) {
 // Projectiles fly in eight directions. Arbitrary angles would mean sin/cos on
 // an ATmega32u4 — expensive in both flash and cycles for no visible gain at
 // 128x64 — so the compiler resolves a direction to a dx/dy pair up front.
+// The first four share the DIRECTIONS numbering, so an actor's facing maps
+// straight through to a projectile direction.
 export const PROJECTILE_DIRS = [
   { key: 'down', label: '▼ Down', code: 0, dx: 0, dy: 1 },
-  { key: 'up', label: '▲ Up', code: 1, dx: 0, dy: -1 },
-  { key: 'left', label: '◀ Left', code: 2, dx: -1, dy: 0 },
-  { key: 'right', label: '▶ Right', code: 3, dx: 1, dy: 0 },
+  { key: 'right', label: '▶ Right', code: 1, dx: 1, dy: 0 },
+  { key: 'up', label: '▲ Up', code: 2, dx: 0, dy: -1 },
+  { key: 'left', label: '◀ Left', code: 3, dx: -1, dy: 0 },
   { key: 'upLeft', label: '◤ Up-left', code: 4, dx: -1, dy: -1 },
   { key: 'upRight', label: '◥ Up-right', code: 5, dx: 1, dy: -1 },
   { key: 'downLeft', label: '◣ Down-left', code: 6, dx: -1, dy: 1 },
@@ -153,7 +157,7 @@ export const TRIGGER_SCRIPT_SLOTS = [
 export const NON_BLOCKING_SLOTS = ['update'];
 
 // Event fields that hold a nested event list (branches, button bodies).
-export const NESTED_EVENT_LISTS = ['then', 'else', 'script'];
+export const NESTED_EVENT_LISTS = ['then', 'else', 'script', 'events'];
 
 // Visit every event in a list, descending into nested lists.
 export function forEachEvent(events, fn) {
@@ -455,6 +459,15 @@ export function makeEvent(type) {
     case 'POP_ALL_SCENES': return { id: uid('ev'), type, fade: 2 };
     case 'FADE_IN':     return { id: uid('ev'), type, fade: 2 };
     case 'FADE_OUT':    return { id: uid('ev'), type, fade: 2 };
+    case 'IF_ACTOR_AT': return { id: uid('ev'), type, target: 'self', x: 0, y: 0, then: [], else: [] };
+    case 'IF_ACTOR_DISTANCE': return {
+      id: uid('ev'), type, target: 'player', cmp: '<=', distance: 3, from: 'self',
+      then: [], else: [],
+    };
+    case 'STORE_ACTOR_DIR': return { id: uid('ev'), type, target: 'self', varId: '' };
+    case 'STORE_ACTOR_POS': return { id: uid('ev'), type, target: 'self', varX: '', varY: '' };
+    case 'COMMENT':     return { id: uid('ev'), type, text: '' };
+    case 'EVENT_GROUP': return { id: uid('ev'), type, label: '', events: [] };
     case 'END_SCRIPT':  return { id: uid('ev'), type };
     default: throw new Error(`Unknown event type ${type}`);
   }
@@ -475,6 +488,8 @@ export const EVENT_DEFS = [
   { type: 'SET_VAR',      label: 'Set Variable',      group: 'Variables' },
   { type: 'ADD_VAR',      label: 'Add To Variable',   group: 'Variables' },
   { type: 'IF_VAR',       label: 'If Variable…',      group: 'Variables' },
+  { type: 'STORE_ACTOR_DIR', label: 'Store Actor Direction In Variable', group: 'Variables' },
+  { type: 'STORE_ACTOR_POS', label: 'Store Actor Position In Variables', group: 'Variables' },
   { type: 'ACTOR_HIDE',   label: 'Hide Actor',        group: 'Actors' },
   { type: 'ACTOR_SHOW',   label: 'Show Actor',        group: 'Actors' },
   { type: 'ACTOR_MOVE',   label: 'Move Actor',        group: 'Actors' },
@@ -497,6 +512,10 @@ export const EVENT_DEFS = [
   { type: 'DELETE_SAVE',  label: 'Delete Save',       group: 'Save games' },
   { type: 'WAIT',         label: 'Wait',              group: 'Timing' },
   { type: 'END_SCRIPT',   label: 'Stop Script',       group: 'Timing' },
+  { type: 'IF_ACTOR_AT',  label: 'If Actor At Position', group: 'Control Flow' },
+  { type: 'IF_ACTOR_DISTANCE', label: 'If Actor Distance From Actor', group: 'Control Flow' },
+  { type: 'COMMENT',      label: 'Comment',           group: 'Miscellaneous' },
+  { type: 'EVENT_GROUP',  label: 'Event Group',       group: 'Miscellaneous' },
 ];
 
 // ---------------------------------------------------------------------------

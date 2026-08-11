@@ -785,7 +785,7 @@ console.log('— actor direction, speed and effects —');
   ];
   const e = new Emulator(compileProject(proj), { onTone: () => {} });
   runActorScript(e, 0);
-  assert(e.actors[0].facing === 2, `facing set to left (${e.actors[0].facing})`);
+  assert(e.actors[0].facing === 3, `facing set to left, which encodes as 3 (${e.actors[0].facing})`);
   assert(e.actors[0].speed === 3, `speed set to 3 (${e.actors[0].speed})`);
   assert(e.actors[0].effect === 2, `shake effect active (${e.actors[0].effect})`);
   // The effect counts itself down and clears.
@@ -863,6 +863,204 @@ console.log('— scene stack and fades —');
   for (let i = 0; i < 80; i++) { e.setButtons(0); e.step(); }
   assert(e.fade.level === 16, `the screen faded all the way out (${e.fade.level})`);
   assert(e.vars[0] === 5, 'the script resumed once the fade finished');
+}
+
+console.log('— If Actor At Position —');
+{
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  const a = proj.scenes[0].actors[0];
+  proj.scenes[0].scripts.init = [];
+  a.scripts.interact = [Object.assign(makeEventOfType('IF_ACTOR_AT'), {
+    target: 'self', x: a.x, y: a.y,
+    then: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 1 })],
+    else: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 2 })],
+  })];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `If Actor At Position compiles clean (${c.warnings.join('; ')})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.vars[0] === 1, `took the true branch where the actor stands (${e.vars[0]})`);
+
+  // Move the actor off that tile and the same check goes the other way.
+  const e2 = new Emulator(c, { onTone: () => {} });
+  e2.actors[0].px += 8 * 2;
+  runActorScript(e2, 0);
+  assert(e2.vars[0] === 2, `took the false branch once it moved (${e2.vars[0]})`);
+}
+
+{
+  // The player is a valid target too.
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [Object.assign(makeEventOfType('IF_ACTOR_AT'), {
+    target: 'player', x: 5, y: 5,
+    then: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 3 })],
+    else: [],
+  })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  // runActorScript parks the player below the actor, so put it on 5,5 after.
+  const act = e.actors[0];
+  e.player.px = act.tx * 8; e.player.py = (act.ty + 1) * 8;
+  e.player.tx = act.tx; e.player.ty = act.ty + 1;
+  e.player.fx = 0; e.player.fy = -1;
+  e.script.active = false; e.text = null;
+  e.player.px = 5 * 8; e.player.py = 5 * 8;
+  // Face the actor from 5,5 only if it happens to be adjacent; drive the
+  // script directly instead so the position under test is exactly 5,5.
+  e.startScript(compileProject(proj).scenes[0].actors[0].scripts.interact, 0);
+  for (let i = 0; i < 10 && e.script.active; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 3, `the player position was matched (${e.vars[0]})`);
+}
+
+console.log('— If Actor Distance From Actor —');
+{
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  const a = proj.scenes[0].actors[0];
+  proj.scenes[0].scripts.init = [];
+  a.scripts.interact = [Object.assign(makeEventOfType('IF_ACTOR_DISTANCE'), {
+    target: 'player', cmp: '<=', distance: 2, from: 'self',
+    then: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 1 })],
+    else: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 2 })],
+  })];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `If Actor Distance compiles clean (${c.warnings.join('; ')})`);
+
+  // runActorScript stands the player one tile below the actor: distance 1.
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.vars[0] === 1, `one tile away is within 2 (${e.vars[0]})`);
+
+  // Push the player far away and re-run the same script.
+  e.vars[0] = 0;
+  e.player.px = e.actors[0].px + 8 * 9;
+  e.script.active = false; e.text = null;
+  e.startScript(c.scenes[0].actors[0].scripts.interact, 0);
+  for (let i = 0; i < 10 && e.script.active; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 2, `nine tiles away is outside 2 (${e.vars[0]})`);
+}
+
+{
+  // Distance is straight-line, not along the axes: a (3,4) offset is 5, so it
+  // passes "<= 5" but fails "<= 4" — Manhattan would have said 7 for both.
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  proj.scenes[0].scripts.init = [];
+  const mk = (limit) => Object.assign(makeEventOfType('IF_ACTOR_DISTANCE'), {
+    target: 'player', cmp: '<=', distance: limit, from: 'self',
+    then: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 1 })],
+    else: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 2 })],
+  });
+  for (const [limit, want] of [[5, 1], [4, 2]]) {
+    const p2 = JSON.parse(JSON.stringify(proj));
+    p2.scenes[0].actors[0].scripts.interact = [mk(limit)];
+    const c = compileProject(p2);
+    const e = new Emulator(c, { onTone: () => {} });
+    const act = e.actors[0];
+    e.player.px = act.px + 3 * 8;
+    e.player.py = act.py + 4 * 8;
+    e.script.active = false; e.text = null;
+    e.startScript(c.scenes[0].actors[0].scripts.interact, 0);
+    for (let i = 0; i < 10 && e.script.active; i++) { e.setButtons(0); e.step(); }
+    assert(e.vars[0] === want, `a 3,4 offset is distance 5, so "<= ${limit}" is ${want === 1}`);
+  }
+}
+
+console.log('— storing actor state in variables —');
+{
+  const proj = makeDemoProject();
+  const vd = proj.variables[0].id, vx = proj.variables[1].id, vy = proj.variables[2].id;
+  const a = proj.scenes[0].actors[0];
+  a.facing = 'left';
+  proj.scenes[0].scripts.init = [];
+  a.scripts.interact = [
+    Object.assign(makeEventOfType('STORE_ACTOR_DIR'), { target: 'self', varId: vd }),
+    Object.assign(makeEventOfType('STORE_ACTOR_POS'), { target: 'self', varX: vx, varY: vy }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `store events compile clean (${c.warnings.join('; ')})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.vars[0] === 3, `Left stored as 3 (${e.vars[0]})`);
+  assert(e.vars[1] === a.x && e.vars[2] === a.y,
+    `position stored as ${a.x},${a.y} (got ${e.vars[1]},${e.vars[2]})`);
+}
+
+{
+  // The documented encoding: Down 0, Right 1, Up 2, Left 3.
+  const proj = makeDemoProject();
+  const vd = proj.variables[0].id;
+  proj.scenes[0].scripts.init = [];
+  for (const [key, code] of [['down', 0], ['right', 1], ['up', 2], ['left', 3]]) {
+    const p2 = JSON.parse(JSON.stringify(proj));
+    p2.scenes[0].actors[0].facing = key;
+    p2.scenes[0].actors[0].scripts.interact = [
+      Object.assign(makeEventOfType('STORE_ACTOR_DIR'), { target: 'self', varId: vd }),
+    ];
+    const e = new Emulator(compileProject(p2), { onTone: () => {} });
+    runActorScript(e, 0);
+    assert(e.vars[0] === code, `${key} stores as ${code} (got ${e.vars[0]})`);
+  }
+}
+
+{
+  // Writing both halves of a position into one variable is a mistake worth
+  // naming, but it still compiles.
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('STORE_ACTOR_POS'), { target: 'self', varX: v, varY: v }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.some((w) => w.includes('same variable')), 'same-variable position store warns');
+}
+
+console.log('— comments and event groups —');
+{
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  proj.scenes[0].scripts.init = [];
+  const plain = JSON.parse(JSON.stringify(proj));
+  plain.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 1 }),
+  ];
+  const decorated = JSON.parse(JSON.stringify(proj));
+  decorated.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('COMMENT'), { text: 'set the flag' }),
+    Object.assign(makeEventOfType('EVENT_GROUP'), {
+      label: 'setup',
+      events: [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 1 })],
+    }),
+  ];
+  const cPlain = compileProject(plain);
+  const cDecorated = compileProject(decorated);
+  assert(cDecorated.warnings.length === 0, `comments and groups compile clean (${cDecorated.warnings.join('; ')})`);
+  assert(cDecorated.code.length === cPlain.code.length,
+    `neither costs a byte on the device (${cDecorated.code.length} vs ${cPlain.code.length})`);
+
+  const e = new Emulator(cDecorated, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.vars[0] === 1, 'the grouped event still ran');
+}
+
+{
+  // A group nested in a branch keeps working, and a group inside an On Update
+  // slot still gets the non-blocking treatment.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.update = [
+    Object.assign(makeEventOfType('EVENT_GROUP'), {
+      label: 'per frame',
+      events: [Object.assign(makeEventOfType('WAIT'), { frames: 10 })],
+    }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 1 && c.warnings[0].includes('On Update'),
+    `a blocking event inside a group in On Update is still refused (${c.warnings.join('; ')})`);
 }
 
 console.log('— project migration —');

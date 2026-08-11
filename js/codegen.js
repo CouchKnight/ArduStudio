@@ -24,6 +24,9 @@ const PROJ_TABLE = (() => {
   return { dx, dy, facing };
 })();
 
+// Direction codes by name, so the generated engine cannot drift from the model.
+const DIR_CODE = Object.fromEntries(DIRECTIONS.map((d) => [d.key, d.code]));
+
 const SCRIPT_QUEUE_DEPTH = 8;
 
 function cIdent(name, fallback) {
@@ -262,6 +265,9 @@ const uint8_t PROGMEM facingToProjDir[4] = { ${PROJ_TABLE.facing.join(', ')} };
 #define PROJECTILE_SRC_SELF 0xFF
 #define PROJECTILE_SRC_PLAYER 0xFE
 #define COLLIDE_PLAYER 1
+#define ACTOR_REF_SELF 0xFF
+#define ACTOR_REF_PLAYER 0xFE
+
 
 uint8_t vars[NUM_VARS];
 ActorState actors[MAX_SCENE_ACTORS];
@@ -280,6 +286,14 @@ struct {
   uint8_t frame, anim;
   bool moving;
 } player;
+
+// The player has no facing field, only the direction it last walked.
+uint8_t playerFacing() {
+  if (player.fy > 0) return ${DIR_CODE.down};
+  if (player.fy < 0) return ${DIR_CODE.up};
+  if (player.fx < 0) return ${DIR_CODE.left};
+  return ${DIR_CODE.right};
+}
 
 // A script context. "script" is the blocking VM; "scratch" is reused by every
 // On Update script, which must finish inside its frame.
@@ -539,6 +553,41 @@ void startFade(uint8_t target, uint8_t speed) {
   fadeTick = speed;
 }
 
+// Comparison operators, in the order the compiler's CMP table assigns.
+bool compareValues(uint8_t cmp, int16_t a, int16_t b) {
+  switch (cmp) {
+    case 0: return a == b;
+    case 1: return a != b;
+    case 2: return a < b;
+    case 3: return a > b;
+    case 4: return a <= b;
+    default: return a >= b;
+  }
+}
+
+// Tile position of an actor reference: 0xFF is the running script's own actor,
+// 0xFE the player. Returns false when the reference names nothing.
+bool refTile(uint8_t ref, uint8_t self, int16_t& outX, int16_t& outY) {
+  if (ref == ACTOR_REF_PLAYER) {
+    outX = (player.px + TILE_PX / 2) / TILE_PX;
+    outY = (player.py + TILE_PX / 2) / TILE_PX;
+    return true;
+  }
+  uint8_t idx = (ref == ACTOR_REF_SELF) ? self : ref;
+  if (idx >= actorCount) return false;
+  outX = (actors[idx].px + TILE_PX / 2) / TILE_PX;
+  outY = (actors[idx].py + TILE_PX / 2) / TILE_PX;
+  return true;
+}
+
+// Facing code of an actor reference. The player has no stored facing, only the
+// direction it last walked, so derive it from that.
+uint8_t refFacing(uint8_t ref, uint8_t self) {
+  if (ref == ACTOR_REF_PLAYER) return playerFacing();
+  uint8_t idx = (ref == ACTOR_REF_SELF) ? self : ref;
+  return idx < actorCount ? actors[idx].facing : 0;
+}
+
 uint8_t spriteWidth(uint8_t idx) { return pgm_read_byte(&spriteW[idx]); }
 uint8_t spriteHeight(uint8_t idx) { return pgm_read_byte(&spriteH[idx]); }
 
@@ -573,11 +622,7 @@ void launchProjectile(uint8_t src, uint8_t spriteIdx, uint8_t dirCode,
   if (src == PROJECTILE_SRC_PLAYER) {
     x = player.px; y = player.py;
     srcSprite = PLAYER_SPRITE;
-    // The player has no facing code, only the direction it last walked.
-    if (player.fy > 0) facing = 0;
-    else if (player.fy < 0) facing = 1;
-    else if (player.fx < 0) facing = 2;
-    else facing = 3;
+    facing = playerFacing();
   } else {
     if (src >= actorCount) return;
     x = actors[src].px; y = actors[src].py;
@@ -1035,6 +1080,50 @@ void runScript(ScriptCtx& s) {
         startFade(op == 35 ? FADE_LEVELS : 0, speed);
         s.waitFade = true;
         return; // block until the fade finishes
+      }
+      case 36: { // IF_ACTOR_AT
+        uint8_t ref = codeAt(s.pc++);
+        uint8_t x = codeAt(s.pc++);
+        uint8_t y = codeAt(s.pc++);
+        uint16_t elseAddr = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
+        int16_t ax, ay;
+        if (!refTile(ref, s.self, ax, ay) || ax != x || ay != y) s.pc = elseAddr;
+        break;
+      }
+      case 37: { // IF_ACTOR_DISTANCE
+        uint8_t ref = codeAt(s.pc++);
+        uint8_t cmp = codeAt(s.pc++);
+        uint16_t distSq = codeAt(s.pc++);
+        distSq |= (uint16_t)codeAt(s.pc++) << 8;
+        uint8_t fromRef = codeAt(s.pc++);
+        uint16_t elseAddr = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
+        int16_t ax, ay, bx, by;
+        bool pass = false;
+        if (refTile(ref, s.self, ax, ay) && refTile(fromRef, s.self, bx, by)) {
+          int16_t dx = ax - bx, dy = ay - by;
+          pass = compareValues(cmp, dx * dx + dy * dy, (int16_t)distSq);
+        }
+        if (!pass) s.pc = elseAddr;
+        break;
+      }
+      case 38: { // STORE_ACTOR_DIR
+        uint8_t ref = codeAt(s.pc++);
+        uint8_t v = codeAt(s.pc++);
+        if (v < NUM_VARS) vars[v] = refFacing(ref, s.self);
+        break;
+      }
+      case 39: { // STORE_ACTOR_POS
+        uint8_t ref = codeAt(s.pc++);
+        uint8_t vx = codeAt(s.pc++);
+        uint8_t vy = codeAt(s.pc++);
+        int16_t ax, ay;
+        if (refTile(ref, s.self, ax, ay)) {
+          if (vx < NUM_VARS) vars[vx] = ax;
+          if (vy < NUM_VARS) vars[vy] = ay;
+        }
+        break;
       }
       case 21: { // MENU
         menuVar = codeAt(s.pc++);

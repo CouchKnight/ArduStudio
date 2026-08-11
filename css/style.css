@@ -246,8 +246,22 @@ canvas { image-rendering: pixelated; }
 .event-card.ev-IF_VAR { border-left-color: var(--warn); }
 .event-card.ev-SWITCH_SCENE, .event-card.ev-PLAYER_POS { border-left-color: #c792ea; }
 .event-card.ev-TONE, .event-card.ev-WAIT { border-left-color: #f78c6c; }
+.event-card.ev-COMMENT { border-left-color: var(--muted); }
+.event-card.ev-EVENT_GROUP { border-left-color: #8b98a9; }
+.event-card.ev-IF_ACTOR_AT, .event-card.ev-IF_ACTOR_DISTANCE { border-left-color: var(--warn); }
 .event-head { display: flex; align-items: center; gap: 6px; }
-.event-head .ev-label { font-weight: 600; flex: 1; }
+/* A collapsed card is just its header, so its label has to carry the meaning —
+   Comment and Event Group put their own text there. */
+.event-card.collapsed { padding-bottom: 4px; }
+.event-card.collapsed .ev-label { font-weight: 500; color: var(--muted); }
+.event-head .ev-label {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .event-head .mini { padding: 0 5px; }
 .event-fields { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .event-fields label { font-size: 12px; }
