@@ -65,7 +65,10 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 `Show Dialogue` (auto word-wrapped, paged), `Display Menu` (2–8 options, two layouts,
 optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add Variable`,
 `Change Scene`, `Teleport Player`, `Set Tile` (open doors, reveal passages), `Hide / Show Actor`,
-`Move Actor` (walks and blocks the script until it arrives, or teleports), `Play Tone`,
+`Move Actor` (walks and blocks the script until it arrives, or teleports),
+`Set Actor Sprite`, `Attach Script To Button` (with optional override of the default
+action), `Remove Button Script`, `Pause Script Until Input Pressed`,
+`If Joypad Input Held`, `Play Tone`,
 `Play / Stop Song`, `Set RGB LED` (analog PWM or digital on/off), `Save Game`, `Load Game`,
 `Save Exists → Var`, `Delete Save`, `Wait`, `Stop Script`. Scripts attach to actors
 (on interact), triggers (on enter) and scenes (on enter).
@@ -80,6 +83,7 @@ optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add
 - 32 byte-sized variables drive all game logic.
 - Music and SFX via **ArduboyTones**, with looping background tracks.
 - Menus and yes/no prompts that write the player's answer into a variable.
+- Scripts attachable to any of the six buttons, optionally replacing the default action.
 - RGB LED feedback, analog (PWM brightness) or digital (on/off).
 - Save games in EEPROM — variables, current scene and player position, surviving power-off.
 
@@ -124,14 +128,14 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 79 assertions: playthrough plus camera, saves, songs, menus, LED
+node tools/test_runtime.mjs     # 102 assertions: playthrough, camera, saves, songs, menus, LED, input
 node tools/check_codegen.mjs    # generated sketches pass g++ -Wall -Wextra
 tools/build_avr.sh              # optional: full ATmega32u4 build (needs gcc-avr, avr-libc)
 ```
 
 The AVR build compiles the generated sketch against the unmodified Arduboy2 and ArduboyTones
-libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 19,610 bytes
-flash / 1,705 bytes RAM.
+libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 20,332 bytes
+flash / 1,713 bytes RAM.
 
 ## Offline / desktop builds
 
@@ -170,6 +174,7 @@ localStorage and can be saved to / loaded from JSON files.
 
 64 tiles · 32 sprites × 4 frames · 8 actors + 8 triggers per scene · 32 variables ·
 32 songs × 192 notes · 256 dialogue strings · 8 options per menu (~9 chars each) ·
+6 buttons with one attached script each ·
 scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene.
 
 Roadmap ideas: ArduboyFX data export for asset-heavy games, multiple save slots, `.arduboy` package

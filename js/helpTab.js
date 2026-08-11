@@ -83,6 +83,32 @@ clipped, and the exporter warns you about it.</p>
 <p class="hint">A title screen is just <b>Save Exists → Var</b> followed by a menu offering
 "Continue" and "New game".</p>
 
+<h2>Buttons and input</h2>
+<p>The Arduboy has six buttons — ◀ ▶ ▲ ▼ A and B. (There is no Start or Select.)
+By default the D‑pad walks the player and A interacts; the <b>Input</b> event group
+lets a script take over.</p>
+<ul>
+  <li><b>Attach Script To Button</b> — run a script every time a button is pressed.
+      Tick <i>Override default button action</i> to replace what the button normally
+      does; leave it off and the button keeps its usual job <i>and</i> runs your script.
+      An attached script stays attached across scene changes until you remove it.</li>
+  <li><b>Remove Button Script</b> — detach it again, restoring the default behaviour.</li>
+  <li><b>Pause Script Until Input Pressed</b> — hold the script here until one of the
+      chosen buttons is pressed ("press A to continue"). Tick several under <i>Any of</i>
+      to accept any of them.</li>
+  <li><b>If Joypad Input Held</b> — branch on buttons held <i>right now</i>. It checks
+      once and carries straight on; it never waits. To react every time a button is
+      pressed, use <b>Attach Script To Button</b> instead.</li>
+</ul>
+<p class="hint">Overriding a D‑pad direction stops the player walking that way — handy
+for a menu or a driving section — so remember to remove the script afterwards.</p>
+
+<h2>Changing an actor's look</h2>
+<p><b>Set Actor Sprite</b> (in the <b>Actors</b> group) swaps the sprite an actor is
+drawn with: a chest opening, an NPC changing clothes, an enemy showing damage. If the
+new sprite has fewer animation frames than the old one, the actor's frame resets so it
+never points past the end.</p>
+
 <h2>The RGB LED</h2>
 <p><b>Set RGB LED</b> (in the <b>Hardware</b> group) drives the LED next to the screen —
 ideal feedback for a hit, a pickup or a menu confirmation.</p>
@@ -172,6 +198,7 @@ save games use the AVR's built-in EEPROM.</p>
   <tr><td>Set Tile changes</td><td>16 live tile changes per scene</td></tr>
   <tr><td>Dialogue</td><td>256 unique strings (shared with menu labels)</td></tr>
   <tr><td>Menu options</td><td>8 per menu, ~9 characters per label</td></tr>
+  <tr><td>Buttons</td><td>6 (◀ ▶ ▲ ▼ A B) — one attached script each</td></tr>
 </table>
 <p class="hint">The ATmega32u4 has ~28 KB of usable flash — roomy for dozens of scenes. The FX‑C's extra
 16 MB FX flash chip is not needed for ArduStudio games (that is where the 300-game library lives).</p>

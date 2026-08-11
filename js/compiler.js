@@ -5,7 +5,7 @@
 
 import {
   SCENE_W, SCENE_H, MAX_VARIABLES,
-  sceneCols, sceneRows,
+  sceneCols, sceneRows, buttonIndex,
   pixelsToBytes, sceneById, spriteById,
 } from './model.js';
 
@@ -32,7 +32,15 @@ export const OP = {
   DELETE_SAVE: 19,
   SET_LED: 20,      // mode (0 = analog PWM, 1 = digital on/off), r, g, b
   MENU: 21,         // varIdx, count, flags, then count string indices
+  SET_ACTOR_SPRITE: 22, // actorIdx (0xFF = self), spriteIdx
+  ATTACH_SCRIPT: 23,    // buttonIdx, flags (bit0 = override default), scriptIdx
+  REMOVE_BUTTON_SCRIPT: 24, // buttonIdx
+  WAIT_INPUT: 25,   // buttonMask — blocks until any of these is pressed
+  IF_INPUT: 26,     // buttonMask, elseAddrLo, elseAddrHi (buttons currently held)
 };
+
+export const ATTACH_OVERRIDE = 1;
+export const NUM_BUTTONS = 6;
 
 // MENU flag bits.
 export const MENU_LAST_IS_ZERO = 1;
@@ -243,6 +251,49 @@ export function compileProject(project) {
           }
           break;
         }
+        case 'SET_ACTOR_SPRITE': {
+          let idx = 0xff;
+          if (ev.target !== 'self') {
+            idx = scene ? scene.actors.findIndex((a) => a.id === ev.target) : -1;
+            if (idx < 0) { warnings.push(`${ctx}: Set Actor Sprite target not in this scene — skipped`); break; }
+          }
+          const spriteIdx = project.sprites.findIndex((s) => s.id === ev.spriteId);
+          if (spriteIdx < 0) { warnings.push(`${ctx}: Set Actor Sprite has no sprite selected — skipped`); break; }
+          emit(OP.SET_ACTOR_SPRITE, idx, spriteIdx);
+          break;
+        }
+        case 'ATTACH_SCRIPT': {
+          if (!ev.script || !ev.script.length) {
+            warnings.push(`${ctx}: Attach Script To Button has an empty script — skipped`);
+            break;
+          }
+          const btn = buttonIndex(ev.button);
+          const scriptIdx = addScript(ev.script, scene, `${ctx} → ${ev.button.toUpperCase()} button script`);
+          emit(OP.ATTACH_SCRIPT, btn, ev.override ? ATTACH_OVERRIDE : 0, scriptIdx);
+          break;
+        }
+        case 'REMOVE_BUTTON_SCRIPT':
+          emit(OP.REMOVE_BUTTON_SCRIPT, buttonIndex(ev.button));
+          break;
+        case 'WAIT_INPUT': {
+          const mask = byte(ev.mask) & 0x3f;
+          if (!mask) { warnings.push(`${ctx}: Pause Script Until Input Pressed has no buttons selected — skipped`); break; }
+          emit(OP.WAIT_INPUT, mask);
+          break;
+        }
+        case 'IF_INPUT': {
+          const mask = byte(ev.mask) & 0x3f;
+          if (!mask) { warnings.push(`${ctx}: If Joypad Input Held has no buttons selected — skipped`); break; }
+          emit(OP.IF_INPUT, mask);
+          const elsePatch = code.length; emitU16(0);
+          compileEvents(ev.then, scene, ctx);
+          emit(OP.JUMP);
+          const endPatch = code.length; emitU16(0);
+          patchU16(code, elsePatch, code.length);
+          compileEvents(ev.else, scene, ctx);
+          patchU16(code, endPatch, code.length);
+          break;
+        }
         case 'CHOICE': {
           // A two-option menu in the dialogue layout, where the last option
           // yields 0 — exactly "first = true (1), second = false (0)".
@@ -267,15 +318,28 @@ export function compileProject(project) {
     }
   }
 
+  // Scripts are compiled through a queue rather than inline. compileEvents()
+  // appends to a single `code` array, so compiling a nested script (an Attach
+  // Script To Button body) from inside it would splice that script's bytes into
+  // the middle of its parent. Reserving the index up front lets ATTACH_SCRIPT
+  // emit a reference immediately, while the offset is filled in on drain.
   const scriptOffsets = [];
+  const pendingScripts = [];
   function addScript(events, scene, ctx) {
     if (!events || !events.length) return NO_SCRIPT;
     const idx = scriptOffsets.length;
     if (idx >= 255) throw new Error('Too many scripts (max 255)');
-    scriptOffsets.push(code.length);
-    compileEvents(events, scene, ctx);
-    emit(OP.END);
+    scriptOffsets.push(0); // patched in drainScripts()
+    pendingScripts.push({ idx, events, scene, ctx });
     return idx;
+  }
+  function drainScripts() {
+    while (pendingScripts.length) {
+      const job = pendingScripts.shift();
+      scriptOffsets[job.idx] = code.length;
+      compileEvents(job.events, job.scene, job.ctx);
+      emit(OP.END);
+    }
   }
 
   const scenes = project.scenes.map((scene, si) => {
@@ -304,6 +368,8 @@ export function compileProject(project) {
     }));
     return { name: scene.name, index: si, cols: cw, rows: ch, tiles: scene.tiles.slice(), actors, triggers, onEnterIdx };
   });
+
+  drainScripts();
 
   if (code.length > 0xfffe) throw new Error('Compiled scripts exceed 64KB');
 

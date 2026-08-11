@@ -397,6 +397,182 @@ console.log('— Display Multiple Choice —');
   assert(e2.vars[0] === 0, `second option is false / 0 (got ${e2.vars[0]})`);
 }
 
+console.log('— Set Actor Sprite —');
+{
+  const proj = makeDemoProject();
+  const ev = makeEventOfType('SET_ACTOR_SPRITE');
+  ev.target = 'self'; ev.spriteId = proj.sprites[2].id; // Slime
+  proj.scenes[0].actors[0].script = [ev];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `compiles cleanly (${c.warnings.join('; ') || 'none'})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  const before = e.actors[0].spriteIdx;
+  runActorScript(e, 0);
+  assert(e.actors[0].spriteIdx === 2, `sprite swapped to index 2 (was ${before}, now ${e.actors[0].spriteIdx})`);
+
+  // The compiled project is shared between Emulator instances, so the swap must
+  // not have written through to it.
+  assert(c.scenes[0].actors[0].spriteIdx === before, 'compiled scene data left untouched');
+  const e2 = new Emulator(c, { onTone: () => {} });
+  assert(e2.actors[0].spriteIdx === before, 'a fresh emulator still shows the original sprite');
+
+  // Switching to a sprite with fewer frames must clamp the current frame.
+  const proj2 = makeDemoProject();
+  proj2.sprites.push({ id: 'spr_single', name: 'Single', width: 8, height: 8, frames: [proj2.sprites[0].frames[0]] });
+  const ev2 = makeEventOfType('SET_ACTOR_SPRITE');
+  ev2.target = 'self'; ev2.spriteId = 'spr_single';
+  proj2.scenes[0].actors[0].script = [ev2];
+  const e3 = new Emulator(compileProject(proj2), { onTone: () => {} });
+  e3.actors[0].frame = 1;
+  runActorScript(e3, 0);
+  assert(e3.actors[0].frame === 0, `frame clamped for a shorter sprite (got ${e3.actors[0].frame})`);
+}
+
+console.log('— Attach / Remove Button Script —');
+{
+  // B opens a dialogue; B is not a movement button, so no override needed.
+  const proj = makeDemoProject();
+  const attach = makeEventOfType('ATTACH_SCRIPT');
+  attach.button = 'b'; attach.override = false;
+  const say = makeEventOfType('TEXT'); say.text = 'Menu!';
+  attach.script = [say];
+  proj.scenes[0].onEnter = [attach];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `attach compiles cleanly (${c.warnings.join('; ') || 'none'})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  e.setButtons(0); e.step();
+  for (let i = 0; i < 20 && e.script.active; i++) { e.setButtons(0); e.step(); }
+  assert(e.buttonScript[5] !== 0xffff, 'B has a script attached after the scene loads');
+
+  press(e, BTN.B);
+  assert(e.script.active && e.text && e.text.str.includes('Menu'), 'pressing B ran the attached script');
+  for (let i = 0; i < 300 && (e.text || e.script.active); i++) {
+    e.setButtons(0); e.step();
+    if (i % 60 === 59) { e.setButtons(BTN.A); e.step(); }
+  }
+
+  // Removing it restores the default (B does nothing on its own).
+  const proj2 = makeDemoProject();
+  const attach2 = makeEventOfType('ATTACH_SCRIPT');
+  attach2.button = 'b';
+  attach2.script = [Object.assign(makeEventOfType('TEXT'), { text: 'Menu!' })];
+  const remove = makeEventOfType('REMOVE_BUTTON_SCRIPT'); remove.button = 'b';
+  proj2.scenes[0].onEnter = [attach2, remove];
+  const e2 = new Emulator(compileProject(proj2), { onTone: () => {} });
+  e2.setButtons(0); e2.step();
+  for (let i = 0; i < 30 && e2.script.active; i++) { e2.setButtons(0); e2.step(); }
+  assert(e2.buttonScript[5] === 0xffff, 'Remove Button Script detached it again');
+  press(e2, BTN.B);
+  assert(!e2.script.active, 'B no longer runs anything once removed');
+}
+
+console.log('— button script override —');
+{
+  // Attach to RIGHT with override: the player must not walk right any more.
+  const mk = (override) => {
+    const proj = makeDemoProject();
+    proj.scenes[0].onEnter = [];
+    const attach = makeEventOfType('ATTACH_SCRIPT');
+    attach.button = 'right'; attach.override = override;
+    attach.script = [Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 42 })];
+    proj.scenes[0].triggers = [];
+    proj.scenes[0].onEnter = [attach];
+    const e = new Emulator(compileProject(proj), { onTone: () => {} });
+    e.setButtons(0); e.step();
+    for (let i = 0; i < 20 && e.script.active; i++) { e.setButtons(0); e.step(); }
+    return e;
+  };
+
+  const eOver = mk(true);
+  const startX = Math.round(eOver.player.px / 8);
+  eOver.setButtons(BTN.RIGHT);
+  for (let i = 0; i < 12; i++) eOver.step();
+  eOver.setButtons(0); eOver.step();
+  assert(Math.round(eOver.player.px / 8) === startX, `override stops the player walking right (x=${Math.round(eOver.player.px / 8)}, was ${startX})`);
+  assert(eOver.vars[0] === 42, `override still ran the script (var=${eOver.vars[0]})`);
+
+  const eNo = mk(false);
+  const startX2 = Math.round(eNo.player.px / 8);
+  eNo.setButtons(BTN.RIGHT);
+  for (let i = 0; i < 12; i++) eNo.step();
+  eNo.setButtons(0); eNo.step();
+  // 12 frames at 2px/frame covers more than one 8px tile, so just assert movement.
+  assert(Math.round(eNo.player.px / 8) > startX2, `without override the player still walks (x=${Math.round(eNo.player.px / 8)}, was ${startX2})`);
+  assert(eNo.vars[0] === 42, `without override the script also ran (var=${eNo.vars[0]})`);
+}
+
+console.log('— Pause Script Until Input Pressed —');
+{
+  const proj = makeDemoProject();
+  const wait = makeEventOfType('WAIT_INPUT');
+  wait.mask = BTN.A | BTN.B;
+  const after = makeEventOfType('SET_VAR');
+  after.varId = proj.variables[0].id; after.value = 7;
+  proj.scenes[0].actors[0].script = [wait, after];
+  const c = compileProject(proj);
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0, false);
+  for (let i = 0; i < 60; i++) { e.setButtons(0); e.step(); }
+  assert(e.script.active && e.vars[0] !== 7, 'script stays blocked while nothing is pressed');
+  press(e, BTN.RIGHT);
+  assert(e.vars[0] !== 7, 'a button outside the mask does not release it');
+  press(e, BTN.B);
+  for (let i = 0; i < 5 && e.script.active; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 7, `pressing B released the script (var=${e.vars[0]})`);
+}
+
+console.log('— If Joypad Input Held —');
+{
+  const proj = makeDemoProject();
+  const iff = makeEventOfType('IF_INPUT');
+  iff.mask = BTN.B;
+  iff.then = [Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 1 })];
+  iff.else = [Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 2 })];
+  proj.scenes[0].actors[0].script = [iff];
+  const c = compileProject(proj);
+
+  // Not held -> false branch.
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.vars[0] === 2, `false branch when B is not held (var=${e.vars[0]})`);
+
+  // Held -> true branch. Hold B while the script starts and runs.
+  const e2 = new Emulator(c, { onTone: () => {} });
+  const a = e2.actors[0];
+  e2.player.px = a.tx * 8; e2.player.py = (a.ty + 1) * 8;
+  e2.player.tx = a.tx; e2.player.ty = a.ty + 1;
+  e2.player.fx = 0; e2.player.fy = -1;
+  e2.script.active = false; e2.text = null;
+  e2.setButtons(BTN.A | BTN.B); e2.step();     // A starts the script, B held
+  e2.setButtons(BTN.B);
+  for (let i = 0; i < 10 && e2.script.active; i++) e2.step();
+  assert(e2.vars[0] === 1, `true branch while B is held (var=${e2.vars[0]})`);
+}
+
+console.log('— nested button scripts compile correctly —');
+{
+  const proj = makeDemoProject();
+  const attach = makeEventOfType('ATTACH_SCRIPT');
+  attach.button = 'b';
+  attach.script = [Object.assign(makeEventOfType('TEXT'), { text: 'from the button' })];
+  const after = makeEventOfType('SET_VAR');
+  after.varId = proj.variables[0].id; after.value = 5;
+  // The attach sits in the middle of a script; its body must not be spliced in.
+  proj.scenes[0].actors[0].script = [attach, after];
+  const c = compileProject(proj);
+  const ascending = c.scriptOffsets.every((o, i, arr) => i === 0 || o >= arr[i - 1]);
+  assert(ascending, `script offsets stay ordered (${c.scriptOffsets.join(',')})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.vars[0] === 5, `the parent script ran past the attach (var=${e.vars[0]})`);
+  assert(!e.text, 'the attached body did not run inline');
+  press(e, BTN.B);
+  assert(e.text && e.text.str.includes('button'), 'the attached body runs on its own when B is pressed');
+}
+
 console.log('— bytecode sanity —');
 assert(compiled.code.length > 40 && compiled.code.length < 4096, `bytecode size sensible (${compiled.code.length} bytes)`);
 assert(compiled.strings.every((s) => s.split('\f').every((p) => p.split('\n').length <= 3 && p.split('\n').every((l) => l.length <= 20))), 'all strings wrapped to 20 chars x 3 lines per page');

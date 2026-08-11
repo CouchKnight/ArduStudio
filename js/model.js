@@ -21,6 +21,21 @@ export const MAX_SONGS = 32;
 export const MAX_SONG_NOTES = 192;
 export const MAX_MENU_OPTIONS = 8;
 
+// The Arduboy's six buttons. Bit values match BTN in emulator.js; the generated
+// sketch maps them to Arduboy2's own constants, whose bit layout differs by
+// board variant. There is no Start or Select button on an Arduboy.
+export const BUTTONS = [
+  { key: 'left', label: '◀', bit: 1 },
+  { key: 'up', label: '▲', bit: 4 },
+  { key: 'down', label: '▼', bit: 8 },
+  { key: 'right', label: '▶', bit: 2 },
+  { key: 'a', label: 'A', bit: 16 },
+  { key: 'b', label: 'B', bit: 32 },
+];
+// Bytecode order (index used by ATTACH_SCRIPT / REMOVE_BUTTON_SCRIPT).
+export const BUTTON_ORDER = ['left', 'right', 'up', 'down', 'a', 'b'];
+export function buttonIndex(key) { return Math.max(0, BUTTON_ORDER.indexOf(key)); }
+
 // Tile dimensions of a scene (scenes can span multiple screens and scroll).
 export function sceneCols(scene) { return SCENE_W * (scene.screensX || 1); }
 export function sceneRows(scene) { return SCENE_H * (scene.screensY || 1); }
@@ -260,6 +275,12 @@ export function makeEvent(type) {
       lastIsZero: false, cancelB: false,
     };
     case 'CHOICE':      return { id: uid('ev'), type, varId: '', trueLabel: 'Yes', falseLabel: 'No' };
+    case 'SET_ACTOR_SPRITE': return { id: uid('ev'), type, target: 'self', spriteId: '' };
+    // Input events. `mask` is a bitfield of BUTTONS bits.
+    case 'ATTACH_SCRIPT': return { id: uid('ev'), type, button: 'a', override: false, script: [] };
+    case 'REMOVE_BUTTON_SCRIPT': return { id: uid('ev'), type, button: 'a' };
+    case 'WAIT_INPUT':  return { id: uid('ev'), type, mask: 16 }; // A by default
+    case 'IF_INPUT':    return { id: uid('ev'), type, mask: 16, then: [], else: [] };
     case 'END_SCRIPT':  return { id: uid('ev'), type };
     default: throw new Error(`Unknown event type ${type}`);
   }
@@ -278,6 +299,11 @@ export const EVENT_DEFS = [
   { type: 'ACTOR_HIDE',   label: 'Hide Actor',        group: 'Actors' },
   { type: 'ACTOR_SHOW',   label: 'Show Actor',        group: 'Actors' },
   { type: 'ACTOR_MOVE',   label: 'Move Actor',        group: 'Actors' },
+  { type: 'SET_ACTOR_SPRITE', label: 'Set Actor Sprite', group: 'Actors' },
+  { type: 'ATTACH_SCRIPT', label: 'Attach Script To Button', group: 'Input' },
+  { type: 'REMOVE_BUTTON_SCRIPT', label: 'Remove Button Script', group: 'Input' },
+  { type: 'WAIT_INPUT',   label: 'Pause Script Until Input Pressed', group: 'Input' },
+  { type: 'IF_INPUT',     label: 'If Joypad Input Held', group: 'Input' },
   { type: 'SET_LED',      label: 'Set RGB LED',       group: 'Hardware' },
   { type: 'TONE',         label: 'Play Tone',         group: 'Sound' },
   { type: 'PLAY_SONG',    label: 'Play Song',         group: 'Sound' },
