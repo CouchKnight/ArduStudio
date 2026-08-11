@@ -65,6 +65,7 @@ class Arduboy2 {
   static void digitalWriteRGB(uint8_t color, uint8_t val);
   void clear();
   void display();
+  static uint8_t* getBuffer();
   void drawPixel(int16_t x, int16_t y, uint8_t color);
   void drawRect(int16_t x, int16_t y, uint8_t w, uint8_t h, uint8_t color);
   void fillRect(int16_t x, int16_t y, uint8_t w, uint8_t h, uint8_t color);

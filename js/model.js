@@ -36,6 +36,155 @@ export const BUTTONS = [
 export const BUTTON_ORDER = ['left', 'right', 'up', 'down', 'a', 'b'];
 export function buttonIndex(key) { return Math.max(0, BUTTON_ORDER.indexOf(key)); }
 
+// ---------------------------------------------------------------------------
+// Actor behaviour
+// ---------------------------------------------------------------------------
+
+// Which way an actor faces. The code is what goes into the bytecode.
+export const DIRECTIONS = [
+  { key: 'down', label: '▼ Down', code: 0, dx: 0, dy: 1 },
+  { key: 'up', label: '▲ Up', code: 1, dx: 0, dy: -1 },
+  { key: 'left', label: '◀ Left', code: 2, dx: -1, dy: 0 },
+  { key: 'right', label: '▶ Right', code: 3, dx: 1, dy: 0 },
+];
+export function directionCode(key) {
+  const d = DIRECTIONS.find((x) => x.key === key);
+  return d ? d.code : 0;
+}
+
+// Projectiles fly in eight directions. Arbitrary angles would mean sin/cos on
+// an ATmega32u4 — expensive in both flash and cycles for no visible gain at
+// 128x64 — so the compiler resolves a direction to a dx/dy pair up front.
+export const PROJECTILE_DIRS = [
+  { key: 'down', label: '▼ Down', code: 0, dx: 0, dy: 1 },
+  { key: 'up', label: '▲ Up', code: 1, dx: 0, dy: -1 },
+  { key: 'left', label: '◀ Left', code: 2, dx: -1, dy: 0 },
+  { key: 'right', label: '▶ Right', code: 3, dx: 1, dy: 0 },
+  { key: 'upLeft', label: '◤ Up-left', code: 4, dx: -1, dy: -1 },
+  { key: 'upRight', label: '◥ Up-right', code: 5, dx: 1, dy: -1 },
+  { key: 'downLeft', label: '◣ Down-left', code: 6, dx: -1, dy: 1 },
+  { key: 'downRight', label: '◢ Down-right', code: 7, dx: 1, dy: 1 },
+];
+// 0xFF asks the runtime to use the launching actor's own facing instead.
+export const PROJECTILE_DIR_SOURCE = 0xff;
+
+// Movement speed in pixels per frame. 0 is the special "half speed" code:
+// one pixel every other frame, for actors that should drift.
+export const ACTOR_SPEEDS = [
+  { value: 0, label: '½ px/frame' },
+  { value: 1, label: '1 px/frame' },
+  { value: 2, label: '2 px/frame' },
+  { value: 3, label: '3 px/frame' },
+  { value: 4, label: '4 px/frame' },
+];
+
+export const ACTOR_EFFECTS = [
+  { key: 'flicker', label: 'Flicker', code: 1 },
+  { key: 'shake', label: 'Shake', code: 2 },
+];
+export function effectCode(key) {
+  const e = ACTOR_EFFECTS.find((x) => x.key === key);
+  return e ? e.code : 1;
+}
+
+// ---------------------------------------------------------------------------
+// Collision groups
+// ---------------------------------------------------------------------------
+
+// An actor belongs to at most one group. Anything that can collide carries a
+// mask of the groups it reacts to; the player is always group "player".
+export const COLLISION_GROUPS = [
+  { key: 'none', label: 'None', code: 0 },
+  { key: '1', label: 'Group 1', code: 1 },
+  { key: '2', label: 'Group 2', code: 2 },
+  { key: '3', label: 'Group 3', code: 3 },
+];
+export function collisionGroupCode(key) {
+  const g = COLLISION_GROUPS.find((x) => x.key === key);
+  return g ? g.code : 0;
+}
+
+// Bits in a collideWith mask.
+export const COLLIDE_TARGETS = [
+  { key: 'player', label: 'Player', bit: 1 },
+  { key: '1', label: 'Group 1', bit: 2 },
+  { key: '2', label: 'Group 2', bit: 4 },
+  { key: '3', label: 'Group 3', bit: 8 },
+];
+export const COLLIDE_PLAYER = 1;
+// Bit for a group code (1..3); group 0 ("none") collides with nothing.
+export function groupBit(code) { return code ? (1 << code) : 0; }
+
+// ---------------------------------------------------------------------------
+// Runtime limits shared by both engines
+// ---------------------------------------------------------------------------
+
+export const MAX_PROJECTILES = 6;   // pool size, ~12 bytes of RAM each
+export const SCENE_STACK_DEPTH = 8; // Push Scene nesting, 3 bytes per entry
+export const FADE_LEVELS = 16;      // 4x4 Bayer dither steps, 0 = fully visible
+
+// ---------------------------------------------------------------------------
+// Script lifecycle slots
+// ---------------------------------------------------------------------------
+//
+// Every entity carries several named scripts rather than one. The key is what
+// is stored in the project file and compiled; the label and hint drive the tab
+// strip in the inspector.
+
+export const SCENE_SCRIPT_SLOTS = [
+  { key: 'init', label: 'On Init', hint: 'Runs every time the scene loads, after each actor\'s own On Init.' },
+  { key: 'playerHit', label: 'On Player Hit', hint: 'Runs when the player touches an actor that has a collision group but no On Hit script of its own.' },
+];
+
+export const ACTOR_SCRIPT_SLOTS = [
+  { key: 'interact', label: 'On Interact', hint: 'Runs when the player faces this actor and presses A.' },
+  { key: 'init', label: 'On Init', hint: 'Runs once when the scene loads, before the scene\'s own On Init.' },
+  { key: 'hit', label: 'On Hit', hint: 'Runs when something this actor collides with touches it.' },
+  { key: 'update', label: 'On Update', hint: 'Runs every frame and must finish in that frame — no waits, dialogue or menus.' },
+];
+
+export const TRIGGER_SCRIPT_SLOTS = [
+  { key: 'enter', label: 'On Enter', hint: 'Runs when the player steps into the area.' },
+  { key: 'leave', label: 'On Leave', hint: 'Runs when the player steps back out of it.' },
+];
+
+// Slots that run outside the blocking script VM, so blocking events are
+// meaningless in them. The compiler warns and skips those events.
+export const NON_BLOCKING_SLOTS = ['update'];
+
+// Event fields that hold a nested event list (branches, button bodies).
+export const NESTED_EVENT_LISTS = ['then', 'else', 'script'];
+
+// Visit every event in a list, descending into nested lists.
+export function forEachEvent(events, fn) {
+  for (const ev of events || []) {
+    fn(ev);
+    for (const key of NESTED_EVENT_LISTS) {
+      if (Array.isArray(ev[key])) forEachEvent(ev[key], fn);
+    }
+  }
+}
+
+// Every top-level script list in a scene, with a label describing where it
+// came from. One place to add a slot, so nothing silently misses a script.
+export function sceneScripts(scene) {
+  const out = [];
+  for (const { key, label } of SCENE_SCRIPT_SLOTS) {
+    out.push({ events: scene.scripts[key], slot: key, label: `Scene "${scene.name}" ${label}` });
+  }
+  for (const a of scene.actors) {
+    for (const { key, label } of ACTOR_SCRIPT_SLOTS) {
+      out.push({ events: a.scripts[key], slot: key, label: `Actor "${a.name}" ${label}`, actor: a });
+    }
+  }
+  for (const t of scene.triggers) {
+    for (const { key, label } of TRIGGER_SCRIPT_SLOTS) {
+      out.push({ events: t.scripts[key], slot: key, label: `Trigger "${t.name}" ${label}`, trigger: t });
+    }
+  }
+  return out;
+}
+
 // Tile dimensions of a scene (scenes can span multiple screens and scroll).
 export function sceneCols(scene) { return SCENE_W * (scene.screensX || 1); }
 export function sceneRows(scene) { return SCENE_H * (scene.screensY || 1); }
@@ -129,12 +278,20 @@ export function makeActor(name, spriteId, x, y) {
     movement: 'static',   // static | wander | patrolH | patrolV
     solid: true,          // blocks the player / can be interacted with
     animate: true,        // cycle frames
-    script: [],           // run when player interacts (A button)
+    facing: 'down',       // which way it points (drives Launch Projectile)
+    speed: 1,             // pixels per frame; 0 = half speed
+    collisionGroup: 'none',
+    collideWith: 0,       // bitmask of COLLIDE_TARGETS
+    scripts: makeActorScripts(),
   };
 }
 
+export function makeActorScripts() {
+  return { init: [], interact: [], hit: [], update: [] };
+}
+
 export function makeTrigger(name, x, y, w = 1, h = 1) {
-  return { id: uid('trig'), name, x, y, w, h, script: [] };
+  return { id: uid('trig'), name, x, y, w, h, scripts: { enter: [], leave: [] } };
 }
 
 export function makeScene(name, screensX = 1, screensY = 1) {
@@ -146,7 +303,7 @@ export function makeScene(name, screensX = 1, screensY = 1) {
     tiles: new Array(SCENE_W * screensX * SCENE_H * screensY).fill(0), // indices into project.tiles
     actors: [],
     triggers: [],
-    onEnter: [], // script run when the scene is entered
+    scripts: { init: [], playerHit: [] },
   };
 }
 
@@ -281,6 +438,23 @@ export function makeEvent(type) {
     case 'REMOVE_BUTTON_SCRIPT': return { id: uid('ev'), type, button: 'a' };
     case 'WAIT_INPUT':  return { id: uid('ev'), type, mask: 16 }; // A by default
     case 'IF_INPUT':    return { id: uid('ev'), type, mask: 16, then: [], else: [] };
+    case 'SET_ACTOR_DIR':   return { id: uid('ev'), type, target: 'self', direction: 'down' };
+    case 'SET_ACTOR_SPEED': return { id: uid('ev'), type, target: 'self', speed: 1 };
+    case 'ACTOR_EFFECT':    return { id: uid('ev'), type, target: 'self', effect: 'flicker', frames: 30 };
+    case 'LAUNCH_PROJECTILE': return {
+      id: uid('ev'), type,
+      source: 'self',          // self | player | an actor id
+      spriteId: '',
+      direction: 'source',     // 'source' = the launcher's own facing
+      speed: 2, life: 60, collideWith: 0,
+    };
+    // Scene stack: Push remembers where the player is standing so Pop can put
+    // them back — menus, shops and cutscene rooms without a return trigger.
+    case 'PUSH_SCENE':  return { id: uid('ev'), type, sceneId: '', x: 2, y: 4, fade: 2 };
+    case 'POP_SCENE':   return { id: uid('ev'), type, fade: 2 };
+    case 'POP_ALL_SCENES': return { id: uid('ev'), type, fade: 2 };
+    case 'FADE_IN':     return { id: uid('ev'), type, fade: 2 };
+    case 'FADE_OUT':    return { id: uid('ev'), type, fade: 2 };
     case 'END_SCRIPT':  return { id: uid('ev'), type };
     default: throw new Error(`Unknown event type ${type}`);
   }
@@ -293,6 +467,11 @@ export const EVENT_DEFS = [
   { type: 'SWITCH_SCENE', label: 'Change Scene',      group: 'Scene' },
   { type: 'PLAYER_POS',   label: 'Teleport Player',   group: 'Scene' },
   { type: 'SET_TILE',     label: 'Set Tile',          group: 'Scene' },
+  { type: 'PUSH_SCENE',   label: 'Push Scene',        group: 'Scene' },
+  { type: 'POP_SCENE',    label: 'Pop Scene',         group: 'Scene' },
+  { type: 'POP_ALL_SCENES', label: 'Pop All Scenes',  group: 'Scene' },
+  { type: 'FADE_IN',      label: 'Fade In',           group: 'Scene' },
+  { type: 'FADE_OUT',     label: 'Fade Out',          group: 'Scene' },
   { type: 'SET_VAR',      label: 'Set Variable',      group: 'Variables' },
   { type: 'ADD_VAR',      label: 'Add To Variable',   group: 'Variables' },
   { type: 'IF_VAR',       label: 'If Variable…',      group: 'Variables' },
@@ -300,6 +479,10 @@ export const EVENT_DEFS = [
   { type: 'ACTOR_SHOW',   label: 'Show Actor',        group: 'Actors' },
   { type: 'ACTOR_MOVE',   label: 'Move Actor',        group: 'Actors' },
   { type: 'SET_ACTOR_SPRITE', label: 'Set Actor Sprite', group: 'Actors' },
+  { type: 'SET_ACTOR_DIR',   label: 'Set Actor Direction', group: 'Actors' },
+  { type: 'SET_ACTOR_SPEED', label: 'Set Actor Movement Speed', group: 'Actors' },
+  { type: 'ACTOR_EFFECT',    label: 'Actor Effects',     group: 'Actors' },
+  { type: 'LAUNCH_PROJECTILE', label: 'Launch Projectile', group: 'Actors' },
   { type: 'ATTACH_SCRIPT', label: 'Attach Script To Button', group: 'Input' },
   { type: 'REMOVE_BUTTON_SCRIPT', label: 'Remove Button Script', group: 'Input' },
   { type: 'WAIT_INPUT',   label: 'Pause Script Until Input Pressed', group: 'Input' },
@@ -588,7 +771,7 @@ export function makeDemoProject() {
     const no = makeEvent('TEXT'); no.text = 'Suit yourself!';
     answer.then = [yes]; answer.else = [no];
     iff.then = [t1, step]; iff.else = [e1, ask, choice, answer];
-    villager.script = [iff];
+    villager.scripts.interact = [iff];
   }
   outdoors.actors.push(villager);
 
@@ -609,7 +792,7 @@ export function makeDemoProject() {
     const hide = makeEvent('ACTOR_HIDE'); hide.target = 'self';
     iff.then = [t1, sv, jingle, ledOn, wait, ledOff, hide];
     iff.else = [];
-    slime.script = [iff];
+    slime.scripts.interact = [iff];
   }
   lake.actors.push(slime);
   // Keep the slime gone once looted.
@@ -618,7 +801,7 @@ export function makeDemoProject() {
     iff.varId = vHasKey.id; iff.cmp = '=='; iff.value = 1;
     const hide = makeEvent('ACTOR_HIDE'); hide.target = slime.id;
     iff.then = [hide];
-    lake.onEnter = [iff];
+    lake.scripts.init = [iff];
   }
 
   // Stepping in front of the door checks the key (the door tile itself is
@@ -633,7 +816,7 @@ export function makeDemoProject() {
     const e1 = makeEvent('TEXT'); e1.text = 'The door is locked tight.';
     iff.then = [fanfare, open, t1];
     iff.else = [e1];
-    doorTrig.script = [iff];
+    doorTrig.scripts.enter = [iff];
   }
   outdoors.triggers.push(doorTrig);
 
@@ -644,7 +827,7 @@ export function makeDemoProject() {
   {
     const sw = makeEvent('SWITCH_SCENE');
     sw.sceneId = lake.id; sw.x = 1; sw.y = 5;
-    toLake.script = [sw];
+    toLake.scripts.enter = [sw];
   }
   outdoors.triggers.push(toLake);
   outdoors.tiles[1 * SCENE_W + 15] = T.floor; // opening in the wall
@@ -654,7 +837,7 @@ export function makeDemoProject() {
   {
     const sw = makeEvent('SWITCH_SCENE');
     sw.sceneId = outdoors.id; sw.x = 13; sw.y = 1;
-    backToVillage.script = [sw];
+    backToVillage.scripts.enter = [sw];
   }
   lake.triggers.push(backToVillage);
   lake.tiles[5 * sceneCols(lake) + 0] = T.floor; // opening in the wall
@@ -667,7 +850,7 @@ export function makeDemoProject() {
     intro.text = 'KEY QUEST\nFind the key. Open the door.\fArrows: move  A: talk/use';
     const seen = makeEvent('SET_VAR'); seen.varId = vIntroSeen.id; seen.value = 1;
     iff.then = [intro, seen];
-    outdoors.onEnter = [iff];
+    outdoors.scripts.init = [iff];
   }
 
   p.settings.startSceneId = outdoors.id;
@@ -688,6 +871,20 @@ export function spriteById(project, id) {
 }
 export function variableById(project, id) {
   return project.variables.find((v) => v.id === id) || null;
+}
+
+// Move an entity from the days of a single script per entity to named
+// lifecycle slots, then make sure every slot exists. `legacy` maps an old
+// field name to the slot that now holds it.
+function normalizeScripts(entity, slots, legacy) {
+  entity.scripts = entity.scripts || {};
+  for (const [oldKey, slot] of Object.entries(legacy)) {
+    if (Array.isArray(entity[oldKey])) {
+      if (!entity.scripts[slot] || !entity.scripts[slot].length) entity.scripts[slot] = entity[oldKey];
+      delete entity[oldKey];
+    }
+  }
+  for (const { key } of slots) entity.scripts[key] = entity.scripts[key] || [];
 }
 
 // Sanitize a loaded project (older saves, hand-edited files).
@@ -714,7 +911,15 @@ export function normalizeProject(p) {
     sc.tiles = sc.tiles.map((t) => (t >= 0 && t < p.tiles.length ? t : 0));
     sc.actors = (sc.actors || []).slice(0, MAX_ACTORS_PER_SCENE);
     sc.triggers = (sc.triggers || []).slice(0, MAX_TRIGGERS_PER_SCENE);
-    sc.onEnter = sc.onEnter || [];
+    normalizeScripts(sc, SCENE_SCRIPT_SLOTS, { onEnter: 'init' });
+    for (const a of sc.actors) {
+      normalizeScripts(a, ACTOR_SCRIPT_SLOTS, { script: 'interact' });
+      a.facing = DIRECTIONS.some((d) => d.key === a.facing) ? a.facing : 'down';
+      a.speed = ACTOR_SPEEDS.some((s) => s.value === a.speed) ? a.speed : 1;
+      a.collisionGroup = COLLISION_GROUPS.some((g) => g.key === a.collisionGroup) ? a.collisionGroup : 'none';
+      a.collideWith = Math.max(0, Math.min(15, a.collideWith | 0));
+    }
+    for (const t of sc.triggers) normalizeScripts(t, TRIGGER_SCRIPT_SLOTS, { script: 'enter' });
   }
   if (!sceneById(p, p.settings.startSceneId) && p.scenes[0]) {
     p.settings.startSceneId = p.scenes[0].id;

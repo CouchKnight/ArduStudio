@@ -3,7 +3,7 @@
 // would break.
 
 import { el, clear } from './ui.js';
-import { uid, MAX_VARIABLES } from './model.js';
+import { uid, MAX_VARIABLES, sceneScripts } from './model.js';
 
 // Walk every script in the project and collect where each variable is used.
 function collectUsages(project) {
@@ -27,9 +27,7 @@ function collectUsages(project) {
     }
   };
   for (const sc of project.scenes) {
-    walk(sc.onEnter, `${sc.name} · on enter`);
-    for (const a of sc.actors) walk(a.script, `${sc.name} · ${a.name}`);
-    for (const t of sc.triggers) walk(t.script, `${sc.name} · ${t.name}`);
+    for (const { events, label } of sceneScripts(sc)) walk(events, label);
   }
   return usages;
 }

@@ -3,11 +3,16 @@
 // Arduboy2 font, and follows the same update order, so browser behaviour
 // matches the device.
 
-import { SCENE_W, SCENE_H, TILE } from './model.js';
+import {
+  SCENE_W, SCENE_H, TILE,
+  MAX_PROJECTILES, SCENE_STACK_DEPTH, FADE_LEVELS, PROJECTILE_DIRS,
+  PROJECTILE_DIR_SOURCE, DIRECTIONS, COLLIDE_PLAYER, groupBit,
+} from './model.js';
 import {
   OP, NO_SCRIPT,
   MENU_LAST_IS_ZERO, MENU_CANCEL_B, MENU_LAYOUT_DIALOGUE,
   ATTACH_OVERRIDE, NUM_BUTTONS,
+  PROJECTILE_SRC_SELF, PROJECTILE_SRC_PLAYER,
 } from './compiler.js';
 import { FONT5X7 } from './font5x7.js';
 
@@ -15,11 +20,33 @@ export const BTN = { LEFT: 1, RIGHT: 2, UP: 4, DOWN: 8, A: 16, B: 32 };
 
 const W = 128, H = 64;
 const PLAYER_SPEED = 2;   // px per frame (8px tile / 2 = 4 frames per step)
-const ACTOR_SPEED = 1;
 const ACTOR_MOVE_INTERVAL = 48; // frames between AI steps
 const ANIM_INTERVAL = 20;       // frames between animation frames
 const TEXT_CHARS_PER_FRAME = 2;
 const MAX_TILE_OVERRIDES = 16;  // matches the C++ engine's RAM override table
+const SCRIPT_QUEUE_DEPTH = 8;   // pending init/hit scripts waiting for the VM
+
+// 4x4 ordered dither, the cheapest way to fade a 1-bit screen. A pixel survives
+// while its threshold is at or above the current fade level, so level 0 draws
+// everything and level FADE_LEVELS draws nothing.
+const BAYER4 = [
+  0, 8, 2, 10,
+  12, 4, 14, 6,
+  3, 11, 1, 9,
+  15, 7, 13, 5,
+];
+
+// dx/dy for a projectile direction code, indexed by PROJECTILE_DIRS[].code.
+const PROJ_DX = [];
+const PROJ_DY = [];
+for (const d of PROJECTILE_DIRS) { PROJ_DX[d.code] = d.dx; PROJ_DY[d.code] = d.dy; }
+
+// Actor facing code -> the projectile direction code pointing the same way.
+const FACING_TO_PROJ_DIR = [];
+for (const d of DIRECTIONS) {
+  const match = PROJECTILE_DIRS.find((p) => p.dx === d.dx && p.dy === d.dy);
+  FACING_TO_PROJ_DIR[d.code] = match ? match.code : 0;
+}
 
 // Save-game layout (matches the C++ engine's EEPROM block):
 // [0]=0xA5 [1]=0x5D magic, [2]=scene, [3]=tileX, [4]=tileY, [5..36]=vars
@@ -53,14 +80,26 @@ export class Emulator {
 
   reset() {
     this.vars = new Uint8Array(32);
-    this.script = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0 };
+    this.script = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0, waitFade: false };
+    // On Update scripts run to completion inside one frame, so they need no
+    // persistent program counter — one scratch context is reused for all.
+    this.scratch = { active: false, pc: 0, self: 0xff, wait: 0, waitActor: -1, waitInput: 0, waitFade: false };
     this.text = null; // { str, pageStart, shown }
     this.menu = null; // { varIdx, count, labels, sel, flags }
     // RGB LED, mirroring Arduboy2's setRGBled / digitalWriteRGB.
     this.led = { mode: 'analog', r: 0, g: 0, b: 0 };
     this.armedTrigger = -1;
+    this.armedHit = -1;
     this.frame = 0;
     this.song = { idx: -1, pos: 0, framesLeft: 0, loop: false };
+    this.projectiles = Array.from({ length: MAX_PROJECTILES }, () => ({
+      active: false, spriteIdx: 0, px: 0, py: 0, dx: 0, dy: 0, life: 0, mask: 0,
+    }));
+    // Scenes remembered by Push Scene, so Pop Scene can put the player back.
+    this.sceneStack = [];
+    // level 0 = fully visible; target drives the dither animation.
+    this.fade = { level: 0, target: 0, speed: 0, tick: 0 };
+    this.scriptQueue = [];
     // Scripts attached to buttons persist across scene changes until removed.
     // Bytecode button order: 0=LEFT 1=RIGHT 2=UP 3=DOWN 4=A 5=B.
     this.buttonScript = new Array(NUM_BUTTONS).fill(NO_SCRIPT);
@@ -88,27 +127,56 @@ export class Emulator {
     this.overrides = [];          // SET_TILE lands here, like the C++ RAM table
     this.actors = sc.actors.map((a) => ({
       def: a,
-      // Per-instance copy: `def` is the shared compiled scene object, so Set
-      // Actor Sprite must never write through it.
+      // Per-instance copies: `def` is the shared compiled scene object, so
+      // events like Set Actor Sprite must never write through it.
       spriteIdx: a.spriteIdx,
+      facing: a.facing,
+      speed: a.speed,
+      effect: 0, effectFrames: 0,
       px: a.x * TILE, py: a.y * TILE,
       tx: a.x, ty: a.y,
       moving: false, hidden: false,
       scriptMove: false,
       dir: 1, timer: this.rand(ACTOR_MOVE_INTERVAL),
       frame: 0, anim: this.rand(ANIM_INTERVAL),
+      subTick: 0, // half-speed carry
     }));
     this.player.px = px * TILE; this.player.py = py * TILE;
     this.player.tx = px; this.player.ty = py;
     this.player.moving = false;
     this.armedTrigger = -1;
+    this.armedHit = -1;
     this.text = null;
     this.script.waitActor = -1;
-    if (runEnter && sc.onEnterIdx !== NO_SCRIPT) {
-      this.startScript(sc.onEnterIdx, 0xff);
-    } else {
-      this.script.active = false;
+    for (const p of this.projectiles) p.active = false;
+
+    // Actors initialise before the scene does, and each init can block on
+    // dialogue, so they queue up rather than all running at once.
+    this.scriptQueue = [];
+    if (runEnter) {
+      for (let i = 0; i < sc.actors.length; i++) {
+        if (sc.actors[i].scripts.init !== NO_SCRIPT) this.scriptQueue.push({ idx: sc.actors[i].scripts.init, self: i });
+      }
+      if (sc.scripts.init !== NO_SCRIPT) this.scriptQueue.push({ idx: sc.scripts.init, self: 0xff });
     }
+    if (!this.startNextQueued()) this.script.active = false;
+  }
+
+  // Start the next queued script; false when the queue is empty.
+  startNextQueued() {
+    if (!this.scriptQueue.length) return false;
+    const job = this.scriptQueue.shift();
+    this.startScript(job.idx, job.self);
+    return true;
+  }
+
+  // Hold a script until the VM is free. Collisions can happen while dialogue
+  // is up, and dropping them would lose hits; the queue is bounded so a scene
+  // full of overlapping actors cannot grow it without limit.
+  queueScript(scriptIdx, selfActor) {
+    if (scriptIdx === NO_SCRIPT) return;
+    if (!this.script.active && !this.scriptQueue.length) { this.startScript(scriptIdx, selfActor); return; }
+    if (this.scriptQueue.length < SCRIPT_QUEUE_DEPTH) this.scriptQueue.push({ idx: scriptIdx, self: selfActor });
   }
 
   startScript(scriptIdx, selfActor) {
@@ -118,6 +186,7 @@ export class Emulator {
     this.script.wait = 0;
     this.script.waitActor = -1;
     this.script.waitInput = 0;
+    this.script.waitFade = false;
     this.text = null;
   }
 
@@ -223,21 +292,64 @@ export class Emulator {
   step() {
     this.frame++;
     this.stepSong();
+    this.stepFade();
+
+    // A finished init script hands over to the next one queued by loadScene.
+    if (!this.script.active) this.startNextQueued();
 
     if (this.script.active) {
-      this.runScript();
+      this.runScript(this.script);
     } else {
       // Default actions run first (with overridden buttons masked out), then
       // any script attached to a button that was just pressed takes over.
       this.updatePlayer();
       this.checkTriggers();
+      if (!this.script.active) this.checkCollisions();
       if (!this.script.active) this.checkButtonScripts();
     }
     this.updateActors(!this.script.active);
+    this.updateProjectiles();
+    this.runUpdateScripts();
     this.updateCamera();
 
     this.prevButtons = this.buttons;
     this.draw();
+  }
+
+  // On Update scripts run every frame regardless of what the blocking VM is
+  // doing, and must finish within the frame — the compiler strips anything
+  // that could pause them.
+  runUpdateScripts() {
+    const sceneBefore = this.sceneIdx;
+    for (let i = 0; i < this.actors.length; i++) {
+      const a = this.actors[i];
+      if (a.hidden || a.def.scripts.update === NO_SCRIPT) continue;
+      const s = this.scratch;
+      s.active = true;
+      s.pc = this.g.scriptOffsets[a.def.scripts.update];
+      s.self = i;
+      s.wait = 0; s.waitActor = -1; s.waitInput = 0; s.waitFade = false;
+      this.runScript(s);
+      // A scene change rebuilds this.actors, so the indices we are walking
+      // no longer mean anything.
+      if (this.sceneIdx !== sceneBefore) return;
+    }
+  }
+
+  stepFade() {
+    const f = this.fade;
+    if (f.level === f.target) return;
+    if (f.tick > 0) { f.tick--; return; }
+    f.tick = f.speed;
+    f.level += f.level < f.target ? 1 : -1;
+  }
+
+  fading() { return this.fade.level !== this.fade.target; }
+
+  startFade(target, speed) {
+    this.fade.target = Math.max(0, Math.min(FADE_LEVELS, target));
+    this.fade.speed = speed;
+    this.fade.tick = speed;
   }
 
   updateCamera() {
@@ -313,7 +425,7 @@ export class Emulator {
       const ai = this.actorAt(fx, fy, -1);
       if (ai >= 0) {
         const def = this.actors[ai].def;
-        if (def.scriptIdx !== NO_SCRIPT) this.startScript(def.scriptIdx, ai);
+        if (def.scripts.interact !== NO_SCRIPT) this.startScript(def.scripts.interact, ai);
       }
     }
   }
@@ -328,18 +440,126 @@ export class Emulator {
       const t = sc.triggers[i];
       if (cx >= t.x && cx < t.x + t.w && cy >= t.y && cy < t.y + t.h) { hit = i; break; }
     }
+    if (hit !== this.armedTrigger && this.armedTrigger >= 0) {
+      // Stepping out of an area — or straight from one into another.
+      const left = sc.triggers[this.armedTrigger];
+      if (left && left.scripts.leave !== NO_SCRIPT) this.queueScript(left.scripts.leave, 0xff);
+    }
     if (hit < 0) { this.armedTrigger = -1; return; }
     if (hit !== this.armedTrigger) {
       this.armedTrigger = hit;
       const t = sc.triggers[hit];
-      if (t.scriptIdx !== NO_SCRIPT) this.startScript(t.scriptIdx, 0xff);
+      if (t.scripts.enter !== NO_SCRIPT) this.queueScript(t.scripts.enter, 0xff);
     }
+  }
+
+  // ------------------------------------------------------------- collisions
+
+  spriteSize(idx) {
+    const s = this.g.sprites[idx];
+    return s ? { w: s.width, h: s.height } : { w: TILE, h: TILE };
+  }
+
+  static overlaps(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+  }
+
+  actorOverlapsPlayer(a) {
+    const as = this.spriteSize(a.spriteIdx);
+    const ps = this.spriteSize(this.g.playerSpriteIdx);
+    return Emulator.overlaps(a.px, a.py, as.w, as.h,
+      this.player.px, this.player.py, ps.w, ps.h);
+  }
+
+  // The player touching an actor runs that actor's On Hit script; an actor in
+  // a collision group that has nothing to say falls back to the scene's On
+  // Player Hit. Like triggers, a hit re-arms only once the two separate.
+  checkCollisions() {
+    const sc = this.g.scenes[this.sceneIdx];
+    for (let i = 0; i < this.actors.length; i++) {
+      const a = this.actors[i];
+      if (a.hidden || !a.def.group) continue;
+      if (!this.actorOverlapsPlayer(a)) continue;
+      if (this.armedHit === i) return; // still touching the same actor
+      this.armedHit = i;
+      const wantsPlayer = (a.def.collideWith & COLLIDE_PLAYER) !== 0;
+      if (wantsPlayer && a.def.scripts.hit !== NO_SCRIPT) this.queueScript(a.def.scripts.hit, i);
+      else this.queueScript(sc.scripts.playerHit, i);
+      return;
+    }
+    this.armedHit = -1;
+  }
+
+  // ------------------------------------------------------------ projectiles
+
+  launchProjectile(srcIdx, spriteIdx, dirCode, speed, life, mask) {
+    let x, y, facing;
+    if (srcIdx === PROJECTILE_SRC_PLAYER) {
+      x = this.player.px; y = this.player.py;
+      // The player has no facing code, only the dx/dy it last walked.
+      const d = DIRECTIONS.find((v) => v.dx === this.player.fx && v.dy === this.player.fy);
+      facing = d ? d.code : 0;
+    } else {
+      const a = this.actors[srcIdx];
+      if (!a) return;
+      x = a.px; y = a.py; facing = a.facing;
+    }
+    const dir = dirCode === PROJECTILE_DIR_SOURCE ? FACING_TO_PROJ_DIR[facing] : dirCode;
+    const p = this.projectiles.find((q) => !q.active);
+    if (!p) return; // pool exhausted — the shot is simply dropped
+    p.active = true;
+    p.spriteIdx = spriteIdx;
+    // Start centred on the launcher so a big sprite doesn't shoot from a corner.
+    const src = this.spriteSize(srcIdx === PROJECTILE_SRC_PLAYER ? this.g.playerSpriteIdx : this.actors[srcIdx].spriteIdx);
+    const own = this.spriteSize(spriteIdx);
+    p.px = x + (src.w - own.w) / 2;
+    p.py = y + (src.h - own.h) / 2;
+    p.dx = PROJ_DX[dir] * speed;
+    p.dy = PROJ_DY[dir] * speed;
+    p.life = life;
+    p.mask = mask;
+  }
+
+  updateProjectiles() {
+    const sc = this.g.scenes[this.sceneIdx];
+    for (const p of this.projectiles) {
+      if (!p.active) continue;
+      p.px += p.dx;
+      p.py += p.dy;
+      if (--p.life === 0) { p.active = false; continue; }
+      const size = this.spriteSize(p.spriteIdx);
+      const cx = Math.floor((p.px + size.w / 2) / TILE);
+      const cy = Math.floor((p.py + size.h / 2) / TILE);
+      if (this.tileSolid(cx, cy)) { p.active = false; continue; }
+      for (let i = 0; i < this.actors.length; i++) {
+        const a = this.actors[i];
+        if (a.hidden || !a.def.group) continue;
+        if (!(p.mask & groupBit(a.def.group))) continue;
+        const as = this.spriteSize(a.spriteIdx);
+        if (!Emulator.overlaps(p.px, p.py, size.w, size.h, a.px, a.py, as.w, as.h)) continue;
+        p.active = false;
+        if (a.def.scripts.hit !== NO_SCRIPT) this.queueScript(a.def.scripts.hit, i);
+        else this.queueScript(sc.scripts.playerHit, i);
+        break;
+      }
+    }
+  }
+
+  // Pixels this actor moves this frame. Speed 0 is the half-speed code: one
+  // pixel every other frame. Called once per actor per frame so the carry
+  // toggles at the right rate.
+  actorStep(a) {
+    if (a.speed !== 0) return a.speed;
+    a.subTick ^= 1;
+    return a.subTick;
   }
 
   updateActors(allowMove) {
     for (let i = 0; i < this.actors.length; i++) {
       const a = this.actors[i];
+      if (a.effectFrames > 0 && --a.effectFrames === 0) a.effect = 0;
       if (a.hidden) continue;
+      const step = this.actorStep(a);
       if (a.def.animate && this.g.sprites[a.spriteIdx].frames.length > 1) {
         a.anim++;
         if (a.anim >= ANIM_INTERVAL) { a.anim = 0; a.frame = (a.frame + 1) % this.g.sprites[a.spriteIdx].frames.length; }
@@ -348,16 +568,16 @@ export class Emulator {
       // its target (x first, then y), ignoring collisions.
       if (a.scriptMove) {
         const gx = a.tx * TILE, gy = a.ty * TILE;
-        if (a.px !== gx) a.px += Math.sign(gx - a.px) * Math.min(ACTOR_SPEED, Math.abs(gx - a.px));
-        else if (a.py !== gy) a.py += Math.sign(gy - a.py) * Math.min(ACTOR_SPEED, Math.abs(gy - a.py));
+        if (a.px !== gx) a.px += Math.sign(gx - a.px) * Math.min(step, Math.abs(gx - a.px));
+        else if (a.py !== gy) a.py += Math.sign(gy - a.py) * Math.min(step, Math.abs(gy - a.py));
         if (a.px === gx && a.py === gy) { a.scriptMove = false; a.moving = false; }
         continue;
       }
       if (!allowMove || a.def.movement === 0) continue;
       if (a.moving) {
         const gx = a.tx * TILE, gy = a.ty * TILE;
-        a.px += Math.sign(gx - a.px) * Math.min(ACTOR_SPEED, Math.abs(gx - a.px));
-        a.py += Math.sign(gy - a.py) * Math.min(ACTOR_SPEED, Math.abs(gy - a.py));
+        a.px += Math.sign(gx - a.px) * Math.min(step, Math.abs(gx - a.px));
+        a.py += Math.sign(gy - a.py) * Math.min(step, Math.abs(gy - a.py));
         if (a.px === gx && a.py === gy) a.moving = false;
         continue;
       }
@@ -386,9 +606,14 @@ export class Emulator {
 
   // -------------------------------------------------------------- script VM
 
-  runScript() {
-    const s = this.script;
+  // `s` is a script context: this.script for the blocking VM, or this.scratch
+  // for an On Update script that must finish inside the frame.
+  runScript(s) {
     if (s.wait > 0) { s.wait--; return; }
+    if (s.waitFade) {
+      if (this.fading()) return;
+      s.waitFade = false;
+    }
     if (s.waitActor >= 0) {
       const a = this.actors[s.waitActor];
       if (a && a.scriptMove) return; // still walking
@@ -422,8 +647,9 @@ export class Emulator {
         case OP.SWITCH_SCENE: {
           const scene = code[s.pc++], x = code[s.pc++], y = code[s.pc++];
           this.loadScene(scene, x, y, true);
+          if (s !== this.script) { s.active = false; return; } // update script: its actor is gone
           if (!this.script.active) return;
-          break; // continue into the new scene's onEnter script
+          break; // continue into the new scene's init scripts
         }
         case OP.SET_VAR: { const v = code[s.pc++]; this.vars[v] = code[s.pc++]; break; }
         case OP.ADD_VAR: {
@@ -501,8 +727,9 @@ export class Emulator {
           break;
         case OP.LOAD_GAME:
           if (this.loadGame()) {
+            if (s !== this.script) { s.active = false; return; }
             if (!this.script.active) return;
-            break; // continue into the loaded scene's onEnter script
+            break; // continue into the loaded scene's init scripts
           }
           break; // no save — carry on with the current script
         case OP.SAVE_CHECK: {
@@ -563,6 +790,78 @@ export class Emulator {
           // Held right now — this checks once and never waits.
           if (!this.pressed(mask)) s.pc = elseAddr;
           break;
+        }
+        case OP.SET_ACTOR_DIR: {
+          let idx = code[s.pc++];
+          const dir = code[s.pc++];
+          if (idx === 0xff) idx = s.self;
+          if (idx < this.actors.length) this.actors[idx].facing = dir;
+          break;
+        }
+        case OP.SET_ACTOR_SPEED: {
+          let idx = code[s.pc++];
+          const speed = code[s.pc++];
+          if (idx === 0xff) idx = s.self;
+          if (idx < this.actors.length) {
+            this.actors[idx].speed = speed;
+            this.actors[idx].subTick = 0;
+          }
+          break;
+        }
+        case OP.ACTOR_EFFECT: {
+          let idx = code[s.pc++];
+          const effect = code[s.pc++], frames = code[s.pc++];
+          if (idx === 0xff) idx = s.self;
+          if (idx < this.actors.length) {
+            this.actors[idx].effect = effect;
+            this.actors[idx].effectFrames = frames;
+          }
+          break;
+        }
+        case OP.LAUNCH_PROJECTILE: {
+          let src = code[s.pc++];
+          const spriteIdx = code[s.pc++], dir = code[s.pc++];
+          const speed = code[s.pc++], life = code[s.pc++], mask = code[s.pc++];
+          if (src === PROJECTILE_SRC_SELF) src = s.self;
+          if (src === PROJECTILE_SRC_PLAYER || src < this.actors.length) {
+            this.launchProjectile(src, spriteIdx, dir, speed, life, mask);
+          }
+          break;
+        }
+        case OP.PUSH_SCENE: {
+          const scene = code[s.pc++], x = code[s.pc++], y = code[s.pc++];
+          const speed = code[s.pc++];
+          if (this.sceneStack.length < SCENE_STACK_DEPTH) {
+            this.sceneStack.push({
+              scene: this.sceneIdx,
+              x: Math.round(this.player.px / TILE),
+              y: Math.round(this.player.py / TILE),
+            });
+          }
+          this.loadScene(scene, x, y, true);
+          this.fade.level = FADE_LEVELS;
+          this.startFade(0, speed);
+          if (s !== this.script) { s.active = false; return; }
+          if (!this.script.active) return;
+          break;
+        }
+        case OP.POP_SCENE: case OP.POP_ALL_SCENES: {
+          const speed = code[s.pc++];
+          if (!this.sceneStack.length) break; // nothing pushed — carry on
+          const back = op === OP.POP_ALL_SCENES ? this.sceneStack[0] : this.sceneStack[this.sceneStack.length - 1];
+          this.sceneStack.length = op === OP.POP_ALL_SCENES ? 0 : this.sceneStack.length - 1;
+          this.loadScene(back.scene, back.x, back.y, true);
+          this.fade.level = FADE_LEVELS;
+          this.startFade(0, speed);
+          if (s !== this.script) { s.active = false; return; }
+          if (!this.script.active) return;
+          break;
+        }
+        case OP.FADE_IN: case OP.FADE_OUT: {
+          const speed = code[s.pc++];
+          this.startFade(op === OP.FADE_OUT ? FADE_LEVELS : 0, speed);
+          s.waitFade = true;
+          return; // block until the fade finishes
         }
         case OP.MENU: {
           const varIdx = code[s.pc++];
@@ -738,17 +1037,41 @@ export class Emulator {
     }
     for (const a of this.actors) {
       if (a.hidden) continue;
+      // Flicker blanks the actor on alternate pairs of frames; shake jitters it
+      // one pixel sideways. Both are pure draw-time effects.
+      if (a.effect === 1 && ((this.frame >> 1) & 1)) continue;
+      const shake = a.effect === 2 ? ((this.frame & 1) ? 1 : -1) : 0;
       const spr = this.g.sprites[a.spriteIdx];
       const f = spr.frames[Math.min(a.frame, spr.frames.length - 1)];
-      this.drawBytesMasked(Math.round(a.px) - this.camX, Math.round(a.py) - this.camY, f, spr.width, spr.height);
+      this.drawBytesMasked(Math.round(a.px) + shake - this.camX, Math.round(a.py) - this.camY, f, spr.width, spr.height);
+    }
+    for (const p of this.projectiles) {
+      if (!p.active) continue;
+      const spr = this.g.sprites[p.spriteIdx];
+      if (!spr) continue;
+      this.drawBytesMasked(Math.round(p.px) - this.camX, Math.round(p.py) - this.camY, spr.frames[0], spr.width, spr.height);
     }
     const pspr = this.g.sprites[this.g.playerSpriteIdx];
     if (pspr) {
       const f = pspr.frames[Math.min(this.player.frame, pspr.frames.length - 1)];
       this.drawBytesMasked(Math.round(this.player.px) - this.camX, Math.round(this.player.py) - this.camY, f, pspr.width, pspr.height);
     }
+    this.applyFade();
     if (this.text) this.drawTextbox();
     if (this.menu) this.drawMenu();
+  }
+
+  // Ordered dither over the whole scene. Dialogue and menus are drawn after
+  // this so a fade never swallows the text the player is reading.
+  applyFade() {
+    const level = this.fade.level;
+    if (level <= 0) return;
+    if (level >= FADE_LEVELS) { this.fb.fill(0); return; }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (BAYER4[(y & 3) * 4 + (x & 3)] < level) this.fb[y * W + x] = 0;
+      }
+    }
   }
 
   drawTextbox() {

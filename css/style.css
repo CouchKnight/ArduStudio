@@ -70,8 +70,8 @@ main { flex: 1; overflow: hidden; }
 .tabpane.active { display: flex; }
 
 .sidebar {
-  width: 230px;
-  min-width: 230px;
+  width: 260px;
+  min-width: 260px;
   overflow-y: auto;
   border-right: 1px solid var(--border);
   background: var(--bg2);
@@ -80,7 +80,16 @@ main { flex: 1; overflow: hidden; }
   flex-direction: column;
   gap: 10px;
 }
-.sidebar.right { border-right: none; border-left: 1px solid var(--border); width: 300px; min-width: 300px; }
+.sidebar.right { border-right: none; border-left: 1px solid var(--border); width: 340px; min-width: 340px; }
+
+/* Drag handle sitting on a sidebar's inner edge (see js/sidebars.js). */
+.sidebar-resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.12s;
+}
+.sidebar-resizer:hover, .sidebar-resizer.dragging { background: var(--accent); }
 
 .editor-center {
   flex: 1;
@@ -145,6 +154,9 @@ textarea.code { width: 100%; font: 12px/1.4 ui-monospace, Menlo, Consolas, monos
 label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
 
 .form-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 8px 0; }
+/* A long option must never push a control past the edge of a narrow sidebar. */
+.form-row select, .form-row input[type="text"] { max-width: 100%; min-width: 0; }
+.form-row label { min-width: 0; max-width: 100%; }
 .hint { color: var(--muted); font-size: 12px; }
 .warnings { color: var(--warn); font-size: 12px; white-space: pre-line; margin: 6px 0; }
 .statusline { color: var(--muted); font-size: 12px; height: 18px; }
@@ -258,6 +270,38 @@ select.add-event { max-width: 100%; }
 }
 .btn-key:hover { border-color: var(--accent); }
 .btn-key.active { background: #14405c; border-color: var(--accent); color: #fff; }
+/* Collision-group keys carry words, not arrows, so they get their own row. */
+.button-picker:has(.btn-key.wide) { grid-template-columns: repeat(4, 1fr); }
+.btn-key.wide { font-size: 12px; padding: 5px 2px; }
+
+/* Lifecycle script tabs in the inspector */
+.script-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-bottom: 6px;
+}
+.script-tab {
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.script-tab:hover { border-color: var(--accent); }
+.script-tab.active { background: #14405c; border-color: var(--accent); color: #fff; }
+/* A dot marks a slot that already has events, so a full script is never hidden
+   behind an unselected tab. */
+.script-tab.filled::after {
+  content: '●';
+  margin-left: 5px;
+  font-size: 9px;
+  color: var(--accent2);
+  vertical-align: middle;
+}
 
 /* RGB LED swatch in the script editor */
 .led-swatch {

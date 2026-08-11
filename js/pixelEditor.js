@@ -3,7 +3,7 @@
 import { el, clear, drawPixelsToCanvas } from './ui.js';
 import {
   makeTile, makeSprite, blankPixels, getPixel, setPixel,
-  MAX_TILES, MAX_SPRITES, MAX_FRAMES,
+  MAX_TILES, MAX_SPRITES, MAX_FRAMES, sceneScripts, forEachEvent,
 } from './model.js';
 
 const EDIT_SCALE = 28;
@@ -169,18 +169,13 @@ export function initTileEditor(app) {
           for (const sc of app.project.scenes) {
             sc.tiles = sc.tiles.map((v) => (v === selected ? 0 : v > selected ? v - 1 : v));
             // fix SET_TILE events pointing at shifted indices
-            const fixEvents = (evs) => {
-              for (const ev of evs) {
-                if (ev.type === 'SET_TILE') {
-                  if (ev.tileIndex === selected) ev.tileIndex = 0;
-                  else if (ev.tileIndex > selected) ev.tileIndex -= 1;
-                }
-                if (ev.type === 'IF_VAR') { fixEvents(ev.then); fixEvents(ev.else); }
-              }
-            };
-            fixEvents(sc.onEnter);
-            sc.actors.forEach((a) => fixEvents(a.script));
-            sc.triggers.forEach((t) => fixEvents(t.script));
+            for (const { events } of sceneScripts(sc)) {
+              forEachEvent(events, (ev) => {
+                if (ev.type !== 'SET_TILE') return;
+                if (ev.tileIndex === selected) ev.tileIndex = 0;
+                else if (ev.tileIndex > selected) ev.tileIndex -= 1;
+              });
+            }
           }
           selected = Math.max(0, selected - 1);
           app.save();

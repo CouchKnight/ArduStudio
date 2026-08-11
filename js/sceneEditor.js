@@ -7,6 +7,8 @@ import {
   SCENE_W, SCENE_H, MAX_SCREENS, makeScene, makeActor, makeTrigger,
   sceneById, spriteById, sceneCols, sceneRows, resizeScene,
   MAX_ACTORS_PER_SCENE, MAX_TRIGGERS_PER_SCENE,
+  DIRECTIONS, ACTOR_SPEEDS, COLLISION_GROUPS, COLLIDE_TARGETS,
+  SCENE_SCRIPT_SLOTS, ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS,
 } from './model.js';
 import { renderScriptEditor } from './scriptEditor.js';
 
@@ -28,6 +30,7 @@ export function initSceneEditor(app) {
     selected: null,      // { kind: 'actor'|'trigger', id } or null (scene itself)
     drag: null,          // painting / trigger-drag / move state
     hoverX: -1, hoverY: -1,
+    scriptTab: {},       // entity id -> which lifecycle slot is open
   };
   app.sceneEditorState = st;
 
@@ -370,8 +373,46 @@ export function initSceneEditor(app) {
         type: 'checkbox', checked: a.animate,
         onchange: (e) => { a.animate = e.target.checked; app.save(); },
       }), ' Animate frames')));
-      box.append(el('div', { class: 'panel-title' }, 'On interact (A button)'));
-      box.append(renderScriptEditor(app, sc, a.script, app.save));
+
+      const dirSel = el('select', { onchange: () => { a.facing = dirSel.value; app.save(); } });
+      for (const d of DIRECTIONS) {
+        dirSel.append(el('option', { value: d.key, selected: a.facing === d.key }, d.label));
+      }
+      box.append(field('Facing', dirSel));
+      const spdSel = el('select', { onchange: () => { a.speed = parseInt(spdSel.value, 10); app.save(); } });
+      for (const s of ACTOR_SPEEDS) {
+        spdSel.append(el('option', { value: s.value, selected: a.speed === s.value }, s.label));
+      }
+      box.append(field('Movement speed', spdSel));
+
+      box.append(el('div', { class: 'panel-title' }, 'Collision'));
+      const grpSel = el('select', {
+        onchange: () => { a.collisionGroup = grpSel.value; app.save(); renderInspector(); },
+      });
+      for (const g of COLLISION_GROUPS) {
+        grpSel.append(el('option', { value: g.key, selected: a.collisionGroup === g.key }, g.label));
+      }
+      box.append(field('Group', grpSel));
+      const collideRow = el('div', { class: 'button-picker' });
+      for (const t of COLLIDE_TARGETS) {
+        const on = (a.collideWith & t.bit) !== 0;
+        collideRow.append(el('button', {
+          class: 'btn-key wide' + (on ? ' active' : ''),
+          type: 'button',
+          onclick: () => {
+            a.collideWith = on ? (a.collideWith & ~t.bit) : (a.collideWith | t.bit);
+            app.save();
+            renderInspector();
+          },
+        }, t.label));
+      }
+      box.append(field('Runs On Hit for', collideRow));
+      box.append(el('p', { class: 'hint' }, a.collisionGroup === 'none'
+        ? 'Give the actor a group before anything can collide with it.'
+        : 'Projectiles pick their targets by group; the player triggers On Hit only if Player is ticked here.'));
+
+      box.append(el('div', { class: 'panel-title' }, 'Scripts'));
+      box.append(scriptTabs(a, ACTOR_SCRIPT_SLOTS, sc));
       box.append(el('button', {
         class: 'btn danger', style: 'margin-top:8px',
         onclick: () => {
@@ -401,8 +442,8 @@ export function initSceneEditor(app) {
         })));
       }
       box.append(dims);
-      box.append(el('div', { class: 'panel-title' }, 'On enter'));
-      box.append(renderScriptEditor(app, sc, t.script, app.save));
+      box.append(el('div', { class: 'panel-title' }, 'Scripts'));
+      box.append(scriptTabs(t, TRIGGER_SCRIPT_SLOTS, sc));
       box.append(el('button', {
         class: 'btn danger', style: 'margin-top:8px',
         onclick: () => {
@@ -458,12 +499,34 @@ export function initSceneEditor(app) {
     box.append(el('p', { class: 'hint' },
       `${sc.actors.length}/${MAX_ACTORS_PER_SCENE} actors · ${sc.triggers.length}/${MAX_TRIGGERS_PER_SCENE} triggers`));
     box.append(el('p', { class: 'hint' }, 'Select an actor or trigger with the ➤ tool to edit it here.'));
-    box.append(el('div', { class: 'panel-title' }, 'On scene enter'));
-    box.append(renderScriptEditor(app, sc, sc.onEnter, app.save));
+    box.append(el('div', { class: 'panel-title' }, 'Scripts'));
+    box.append(scriptTabs(sc, SCENE_SCRIPT_SLOTS, sc));
   }
 
   function field(label, control) {
     return el('div', { class: 'form-row' }, label ? el('label', {}, label, control) : control);
+  }
+
+  // A tab strip over an entity's lifecycle scripts, so one inspector can hold
+  // four scripts without becoming a mile long. A dot marks a slot that has
+  // events in it.
+  function scriptTabs(entity, slots, sc) {
+    const active = slots.some((s) => s.key === st.scriptTab[entity.id])
+      ? st.scriptTab[entity.id] : slots[0].key;
+    const strip = el('div', { class: 'script-tabs' });
+    for (const slot of slots) {
+      const filled = entity.scripts[slot.key].length > 0;
+      strip.append(el('button', {
+        class: 'script-tab' + (slot.key === active ? ' active' : '') + (filled ? ' filled' : ''),
+        type: 'button',
+        title: slot.hint,
+        onclick: () => { st.scriptTab[entity.id] = slot.key; renderInspector(); },
+      }, slot.label));
+    }
+    const slot = slots.find((s) => s.key === active);
+    return el('div', {}, strip,
+      el('p', { class: 'hint' }, slot.hint),
+      renderScriptEditor(app, sc, entity.scripts[active], app.save));
   }
 
   function refresh() {

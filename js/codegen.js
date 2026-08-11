@@ -7,6 +7,24 @@
 // "Arduboy" or "Arduino Leonardo"). Requires only the Arduboy2 library.
 
 import { compileProject, NO_SCRIPT } from './compiler.js';
+import {
+  MAX_PROJECTILES, SCENE_STACK_DEPTH, FADE_LEVELS,
+  PROJECTILE_DIRS, DIRECTIONS,
+} from './model.js';
+
+// The generated engine indexes these by direction code, so build the rows in
+// code order rather than declaration order.
+const PROJ_TABLE = (() => {
+  const dx = [], dy = [], facing = [];
+  for (const d of PROJECTILE_DIRS) { dx[d.code] = d.dx; dy[d.code] = d.dy; }
+  for (const d of DIRECTIONS) {
+    const match = PROJECTILE_DIRS.find((p) => p.dx === d.dx && p.dy === d.dy);
+    facing[d.code] = match ? match.code : 0;
+  }
+  return { dx, dy, facing };
+})();
+
+const SCRIPT_QUEUE_DEPTH = 8;
 
 function cIdent(name, fallback) {
   const id = String(name || '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
@@ -125,9 +143,11 @@ ArduboyTones sound(arduboy.audio.enabled);
   out += `const uint16_t PROGMEM scriptOffsets[] = { ${g.scriptOffsets.length ? g.scriptOffsets.join(', ') : 0} };\n\n`;
 
   // ---- scenes
-  out += `struct ActorDef { uint8_t spriteIdx, x, y, movement, flags; uint16_t script; };\n`;
-  out += `struct TriggerDef { uint8_t x, y, w, h; uint16_t script; };\n`;
-  out += `struct SceneDef {\n  const uint8_t* tiles;\n  const ActorDef* actors;\n  const TriggerDef* triggers;\n  uint8_t w, h;               // scene size in tiles (multi-screen scenes scroll)\n  uint8_t actorCount, triggerCount;\n  uint16_t onEnter;\n};\n\n`;
+  const scriptRef = (idx) => (idx === NO_SCRIPT ? 'NO_SCRIPT' : idx);
+
+  out += `struct ActorDef {\n  uint8_t spriteIdx, x, y, movement, flags;\n  uint8_t facing, speed, group, collideWith;\n  uint16_t init, interact, hit, update;\n};\n`;
+  out += `struct TriggerDef { uint8_t x, y, w, h; uint16_t enter, leave; };\n`;
+  out += `struct SceneDef {\n  const uint8_t* tiles;\n  const ActorDef* actors;\n  const TriggerDef* triggers;\n  uint8_t w, h;               // scene size in tiles (multi-screen scenes scroll)\n  uint8_t actorCount, triggerCount;\n  uint16_t init, playerHit;\n};\n\n`;
 
   g.scenes.forEach((sc, i) => {
     out += `// Scene ${i}: ${sc.name}\n`;
@@ -136,14 +156,17 @@ ArduboyTones sound(arduboy.audio.enabled);
       out += `const ActorDef scene_${i}_actors[] PROGMEM = {\n`;
       for (const a of sc.actors) {
         const flags = (a.solid ? 1 : 0) | (a.animate ? 2 : 0);
-        out += `  { ${a.spriteIdx}, ${a.x}, ${a.y}, ${a.movement}, ${flags}, ${a.scriptIdx === NO_SCRIPT ? 'NO_SCRIPT' : a.scriptIdx} },\n`;
+        out += `  { ${a.spriteIdx}, ${a.x}, ${a.y}, ${a.movement}, ${flags},`
+          + ` ${a.facing}, ${a.speed}, ${a.group}, ${a.collideWith},`
+          + ` ${scriptRef(a.scripts.init)}, ${scriptRef(a.scripts.interact)},`
+          + ` ${scriptRef(a.scripts.hit)}, ${scriptRef(a.scripts.update)} },\n`;
       }
       out += `};\n`;
     }
     if (sc.triggers.length) {
       out += `const TriggerDef scene_${i}_triggers[] PROGMEM = {\n`;
       for (const t of sc.triggers) {
-        out += `  { ${t.x}, ${t.y}, ${t.w}, ${t.h}, ${t.scriptIdx === NO_SCRIPT ? 'NO_SCRIPT' : t.scriptIdx} },\n`;
+        out += `  { ${t.x}, ${t.y}, ${t.w}, ${t.h}, ${scriptRef(t.scripts.enter)}, ${scriptRef(t.scripts.leave)} },\n`;
       }
       out += `};\n`;
     }
@@ -153,10 +176,14 @@ ArduboyTones sound(arduboy.audio.enabled);
   g.scenes.forEach((sc, i) => {
     const actors = sc.actors.length ? `scene_${i}_actors` : 'nullptr';
     const triggers = sc.triggers.length ? `scene_${i}_triggers` : 'nullptr';
-    const onEnter = sc.onEnterIdx === NO_SCRIPT ? 'NO_SCRIPT' : sc.onEnterIdx;
-    out += `  { scene_${i}_tiles, ${actors}, ${triggers}, ${sc.cols}, ${sc.rows}, ${sc.actors.length}, ${sc.triggers.length}, ${onEnter} },\n`;
+    out += `  { scene_${i}_tiles, ${actors}, ${triggers}, ${sc.cols}, ${sc.rows}, ${sc.actors.length}, ${sc.triggers.length}, ${scriptRef(sc.scripts.init)}, ${scriptRef(sc.scripts.playerHit)} },\n`;
   });
   out += `};\n`;
+
+  // Sprite dimensions, needed by collision tests without touching PROGMEM
+  // sprite headers on every check.
+  out += `const uint8_t PROGMEM spriteW[] = { ${g.sprites.map((s) => s.width).join(', ') || 8} };\n`;
+  out += `const uint8_t PROGMEM spriteH[] = { ${g.sprites.map((s) => s.height).join(', ') || 8} };\n`;
 
   out += `
 #define START_SCENE ${g.startScene}
@@ -169,7 +196,6 @@ ArduboyTones sound(arduboy.audio.enabled);
 // ---------------------------------------------------------------------------
 
 #define PLAYER_SPEED 2
-#define ACTOR_SPEED 1
 #define ACTOR_MOVE_INTERVAL 48
 #define ANIM_INTERVAL 20
 #define TEXT_CHARS_PER_FRAME 2
@@ -188,11 +214,54 @@ struct ActorState {
   int16_t px, py;
   uint8_t tx, ty;
   uint8_t frame, timer, anim;
+  // Per-instance copies of the fields events can change, so def stays the
+  // pristine PROGMEM record.
+  uint8_t spriteIdx, facing, speed;
+  uint8_t effect, effectFrames, subTick;
   int8_t dir;
   bool moving, hidden, scriptMove;
 };
 
 struct TileOverride { uint8_t x, y, t; };
+
+// Projectiles live in a fixed pool — no allocation on an ATmega32u4.
+#define MAX_PROJECTILES ${MAX_PROJECTILES}
+struct Projectile {
+  int16_t px, py;
+  int8_t dx, dy;
+  uint8_t spriteIdx, life, mask;
+  bool active;
+};
+Projectile projectiles[MAX_PROJECTILES];
+
+// Scenes remembered by Push Scene so Pop Scene can return to them.
+#define SCENE_STACK_DEPTH ${SCENE_STACK_DEPTH}
+struct SceneStackEntry { uint8_t scene, x, y; };
+SceneStackEntry sceneStack[SCENE_STACK_DEPTH];
+uint8_t sceneStackTop = 0;
+
+// Init and hit scripts waiting for the VM to become free.
+#define SCRIPT_QUEUE_DEPTH ${SCRIPT_QUEUE_DEPTH}
+struct QueuedScript { uint16_t idx; uint8_t self; };
+QueuedScript scriptQueue[SCRIPT_QUEUE_DEPTH];
+uint8_t scriptQueueLen = 0;
+
+// Ordered-dither fade. Level 0 draws everything, FADE_LEVELS draws nothing.
+#define FADE_LEVELS ${FADE_LEVELS}
+const uint8_t PROGMEM bayer4[16] = {
+  0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5
+};
+uint8_t fadeLevel = 0, fadeTarget = 0, fadeSpeed = 0, fadeTick = 0;
+
+// dx/dy per projectile direction code, and the direction an actor's facing
+// points at. Both mirror the tables in js/emulator.js.
+const int8_t PROGMEM projDX[8] = { ${PROJ_TABLE.dx.join(', ')} };
+const int8_t PROGMEM projDY[8] = { ${PROJ_TABLE.dy.join(', ')} };
+const uint8_t PROGMEM facingToProjDir[4] = { ${PROJ_TABLE.facing.join(', ')} };
+#define PROJECTILE_DIR_SOURCE 0xFF
+#define PROJECTILE_SRC_SELF 0xFF
+#define PROJECTILE_SRC_PLAYER 0xFE
+#define COLLIDE_PLAYER 1
 
 uint8_t vars[NUM_VARS];
 ActorState actors[MAX_SCENE_ACTORS];
@@ -212,12 +281,22 @@ struct {
   bool moving;
 } player;
 
-bool scriptActive = false;
-uint16_t scriptPC = 0;
-uint8_t scriptSelf = 0xFF;
-uint8_t scriptWait = 0;
-int8_t scriptWaitActor = -1;
+// A script context. "script" is the blocking VM; "scratch" is reused by every
+// On Update script, which must finish inside its frame.
+struct ScriptCtx {
+  uint16_t pc;
+  uint8_t self;
+  uint8_t wait;
+  uint8_t waitInput;
+  int8_t waitActor;
+  bool active;
+  bool waitFade;
+};
+ScriptCtx script = { 0, 0xFF, 0, 0, -1, false, false };
+ScriptCtx scratch = { 0, 0xFF, 0, 0, -1, false, false };
+
 int8_t armedTrigger = -1;
+int8_t armedHit = -1;
 int8_t loopSong = -1; // song index to restart when it finishes, -1 = none
 
 // Dialogue state. textStr points into PROGMEM.
@@ -245,7 +324,7 @@ const uint8_t buttonBits[NUM_BUTTONS] PROGMEM = {
 // Scripts attached to buttons persist across scene changes until removed.
 uint8_t buttonScript[NUM_BUTTONS];
 uint8_t buttonOverride = 0;
-uint8_t scriptWaitInput = 0;
+
 
 uint8_t arduboyMask(uint8_t mask) {
   uint8_t out = 0;
@@ -349,14 +428,20 @@ void stopSong() {
   sound.noTone();
 }
 
+// Forward declarations: loadScene starts the first queued init script, and the
+// script VM in turn loads scenes.
+bool startNextQueued();
+void queueScript(uint16_t scriptIdx, uint8_t selfActor);
+void startFade(uint8_t target, uint8_t speed);
+
 void startScript(uint16_t scriptIdx, uint8_t selfActor) {
   if (scriptIdx == NO_SCRIPT) return;
-  scriptActive = true;
-  scriptPC = pgm_read_word(&scriptOffsets[scriptIdx]);
-  scriptSelf = selfActor;
-  scriptWait = 0;
-  scriptWaitActor = -1;
-  scriptWaitInput = 0;
+  script.active = true;
+  script.pc = pgm_read_word(&scriptOffsets[scriptIdx]);
+  script.self = selfActor;
+  script.wait = 0;
+  script.waitActor = -1;
+  script.waitInput = 0;
   textStr = nullptr;
 }
 
@@ -381,6 +466,12 @@ void loadScene(uint8_t idx, uint8_t px, uint8_t py, bool runEnter) {
     actors[i].moving = false;
     actors[i].hidden = false;
     actors[i].scriptMove = false;
+    actors[i].spriteIdx = actors[i].def.spriteIdx;
+    actors[i].facing = actors[i].def.facing;
+    actors[i].speed = actors[i].def.speed;
+    actors[i].effect = 0;
+    actors[i].effectFrames = 0;
+    actors[i].subTick = 0;
   }
   player.px = px * TILE_PX;
   player.py = py * TILE_PX;
@@ -388,12 +479,152 @@ void loadScene(uint8_t idx, uint8_t px, uint8_t py, bool runEnter) {
   player.ty = py;
   player.moving = false;
   armedTrigger = -1;
+  armedHit = -1;
   textStr = nullptr;
-  scriptWaitActor = -1;
-  if (runEnter && curScene.onEnter != NO_SCRIPT) {
-    startScript(curScene.onEnter, 0xFF);
+  script.waitActor = -1;
+  for (uint8_t i = 0; i < MAX_PROJECTILES; i++) projectiles[i].active = false;
+
+  // Actors initialise before the scene does, and any init can block on
+  // dialogue, so they queue rather than all running at once.
+  scriptQueueLen = 0;
+  if (runEnter) {
+    for (uint8_t i = 0; i < actorCount; i++) {
+      if (actors[i].def.init != NO_SCRIPT && scriptQueueLen < SCRIPT_QUEUE_DEPTH) {
+        scriptQueue[scriptQueueLen].idx = actors[i].def.init;
+        scriptQueue[scriptQueueLen].self = i;
+        scriptQueueLen++;
+      }
+    }
+    if (curScene.init != NO_SCRIPT && scriptQueueLen < SCRIPT_QUEUE_DEPTH) {
+      scriptQueue[scriptQueueLen].idx = curScene.init;
+      scriptQueue[scriptQueueLen].self = 0xFF;
+      scriptQueueLen++;
+    }
+  }
+  if (!startNextQueued()) script.active = false;
+}
+
+// Start the next queued script; false when the queue is empty.
+bool startNextQueued() {
+  if (scriptQueueLen == 0) return false;
+  uint16_t idx = scriptQueue[0].idx;
+  uint8_t self = scriptQueue[0].self;
+  for (uint8_t i = 1; i < scriptQueueLen; i++) scriptQueue[i - 1] = scriptQueue[i];
+  scriptQueueLen--;
+  startScript(idx, self);
+  return true;
+}
+
+// Hold a script until the VM is free — a collision can land while dialogue is
+// up, and dropping it would lose the hit.
+void queueScript(uint16_t scriptIdx, uint8_t selfActor) {
+  if (scriptIdx == NO_SCRIPT) return;
+  if (!script.active && scriptQueueLen == 0) { startScript(scriptIdx, selfActor); return; }
+  if (scriptQueueLen >= SCRIPT_QUEUE_DEPTH) return;
+  scriptQueue[scriptQueueLen].idx = scriptIdx;
+  scriptQueue[scriptQueueLen].self = selfActor;
+  scriptQueueLen++;
+}
+
+void stepFade() {
+  if (fadeLevel == fadeTarget) return;
+  if (fadeTick > 0) { fadeTick--; return; }
+  fadeTick = fadeSpeed;
+  fadeLevel += (fadeLevel < fadeTarget) ? 1 : -1;
+}
+
+void startFade(uint8_t target, uint8_t speed) {
+  fadeTarget = target > FADE_LEVELS ? FADE_LEVELS : target;
+  fadeSpeed = speed;
+  fadeTick = speed;
+}
+
+uint8_t spriteWidth(uint8_t idx) { return pgm_read_byte(&spriteW[idx]); }
+uint8_t spriteHeight(uint8_t idx) { return pgm_read_byte(&spriteH[idx]); }
+
+bool boxesOverlap(int16_t ax, int16_t ay, uint8_t aw, uint8_t ah,
+                  int16_t bx, int16_t by, uint8_t bw, uint8_t bh) {
+  return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+}
+
+// The player touching an actor runs that actor's On Hit; an actor in a group
+// with nothing to say falls back to the scene's On Player Hit. Like triggers,
+// a hit re-arms only once the two separate.
+void checkCollisions() {
+  uint8_t pw = spriteWidth(PLAYER_SPRITE), ph = spriteHeight(PLAYER_SPRITE);
+  for (uint8_t i = 0; i < actorCount; i++) {
+    ActorState& a = actors[i];
+    if (a.hidden || a.def.group == 0) continue;
+    if (!boxesOverlap(a.px, a.py, spriteWidth(a.spriteIdx), spriteHeight(a.spriteIdx),
+                      player.px, player.py, pw, ph)) continue;
+    if (armedHit == (int8_t)i) return;
+    armedHit = i;
+    if ((a.def.collideWith & COLLIDE_PLAYER) && a.def.hit != NO_SCRIPT) queueScript(a.def.hit, i);
+    else queueScript(curScene.playerHit, i);
+    return;
+  }
+  armedHit = -1;
+}
+
+void launchProjectile(uint8_t src, uint8_t spriteIdx, uint8_t dirCode,
+                      uint8_t speed, uint8_t life, uint8_t mask) {
+  int16_t x, y;
+  uint8_t facing, srcSprite;
+  if (src == PROJECTILE_SRC_PLAYER) {
+    x = player.px; y = player.py;
+    srcSprite = PLAYER_SPRITE;
+    // The player has no facing code, only the direction it last walked.
+    if (player.fy > 0) facing = 0;
+    else if (player.fy < 0) facing = 1;
+    else if (player.fx < 0) facing = 2;
+    else facing = 3;
   } else {
-    scriptActive = false;
+    if (src >= actorCount) return;
+    x = actors[src].px; y = actors[src].py;
+    facing = actors[src].facing;
+    srcSprite = actors[src].spriteIdx;
+  }
+  uint8_t dir = (dirCode == PROJECTILE_DIR_SOURCE)
+    ? pgm_read_byte(&facingToProjDir[facing & 3]) : dirCode;
+  for (uint8_t i = 0; i < MAX_PROJECTILES; i++) {
+    if (projectiles[i].active) continue;
+    Projectile& p = projectiles[i];
+    p.active = true;
+    p.spriteIdx = spriteIdx;
+    // Centred on the launcher, so a big sprite does not shoot from a corner.
+    p.px = x + (spriteWidth(srcSprite) - spriteWidth(spriteIdx)) / 2;
+    p.py = y + (spriteHeight(srcSprite) - spriteHeight(spriteIdx)) / 2;
+    p.dx = (int8_t)pgm_read_byte(&projDX[dir & 7]) * (int8_t)speed;
+    p.dy = (int8_t)pgm_read_byte(&projDY[dir & 7]) * (int8_t)speed;
+    p.life = life;
+    p.mask = mask;
+    return;
+  }
+  // Pool exhausted — the shot is simply dropped.
+}
+
+void updateProjectiles() {
+  for (uint8_t i = 0; i < MAX_PROJECTILES; i++) {
+    Projectile& p = projectiles[i];
+    if (!p.active) continue;
+    p.px += p.dx;
+    p.py += p.dy;
+    if (--p.life == 0) { p.active = false; continue; }
+    uint8_t pw = spriteWidth(p.spriteIdx), ph = spriteHeight(p.spriteIdx);
+    int16_t cx = (p.px + pw / 2) / TILE_PX;
+    int16_t cy = (p.py + ph / 2) / TILE_PX;
+    if (tileSolid(cx, cy)) { p.active = false; continue; }
+    for (uint8_t j = 0; j < actorCount; j++) {
+      ActorState& a = actors[j];
+      if (a.hidden || a.def.group == 0) continue;
+      if (!(p.mask & (1 << a.def.group))) continue;
+      if (!boxesOverlap(p.px, p.py, pw, ph, a.px, a.py,
+                        spriteWidth(a.spriteIdx), spriteHeight(a.spriteIdx))) continue;
+      p.active = false;
+      if (a.def.hit != NO_SCRIPT) queueScript(a.def.hit, j);
+      else queueScript(curScene.playerHit, j);
+      break;
+    }
   }
 }
 
@@ -514,58 +745,63 @@ void drawMenu() {
   }
 }
 
-void runScript() {
-  if (scriptWait > 0) { scriptWait--; return; }
-  if (scriptWaitActor >= 0) {
-    if (actors[scriptWaitActor].scriptMove) return; // still walking
-    scriptWaitActor = -1;
+void runScript(ScriptCtx& s) {
+  if (s.wait > 0) { s.wait--; return; }
+  if (s.waitFade) {
+    if (fadeLevel != fadeTarget) return;
+    s.waitFade = false;
   }
-  if (scriptWaitInput) {
-    if (!anyJustPressed(scriptWaitInput)) return; // blocked until pressed
-    scriptWaitInput = 0;
+  if (s.waitActor >= 0) {
+    if (actors[s.waitActor].scriptMove) return; // still walking
+    s.waitActor = -1;
+  }
+  if (s.waitInput) {
+    if (!anyJustPressed(s.waitInput)) return; // blocked until pressed
+    s.waitInput = 0;
   }
   if (menuActive) { updateMenu(); return; }
   if (textStr != nullptr) { updateText(); return; }
   uint16_t guard = 0;
-  while (scriptActive && guard++ < 4096) {
-    uint8_t op = codeAt(scriptPC++);
+  while (s.active && guard++ < 4096) {
+    uint8_t op = codeAt(s.pc++);
     switch (op) {
       case 0: // END
-        scriptActive = false;
+        s.active = false;
         break;
       case 1: { // TEXT
-        uint8_t idx = codeAt(scriptPC++);
+        uint8_t idx = codeAt(s.pc++);
         textStr = (const char*)pgm_read_ptr(&strings[idx]);
         textPageStart = 0;
         textShown = 0;
         return;
       }
       case 2: { // SWITCH_SCENE
-        uint8_t sc = codeAt(scriptPC++);
-        uint8_t x = codeAt(scriptPC++);
-        uint8_t y = codeAt(scriptPC++);
+        uint8_t sc = codeAt(s.pc++);
+        uint8_t x = codeAt(s.pc++);
+        uint8_t y = codeAt(s.pc++);
         loadScene(sc, x, y, true);
-        if (!scriptActive) return;
-        break; // continue into the new scene's onEnter script
+        if (&s != &script) { s.active = false; return; } // update script: its actor is gone
+        if (!s.active) return;
+        break; // continue into the new scene's init scripts
       }
       case 3: { // SET_VAR
-        uint8_t v = codeAt(scriptPC++);
-        uint8_t val = codeAt(scriptPC++);
+        uint8_t v = codeAt(s.pc++);
+        uint8_t val = codeAt(s.pc++);
         if (v < NUM_VARS) vars[v] = val;
         break;
       }
       case 4: { // ADD_VAR
-        uint8_t v = codeAt(scriptPC++);
-        int8_t d = (int8_t)codeAt(scriptPC++);
+        uint8_t v = codeAt(s.pc++);
+        int8_t d = (int8_t)codeAt(s.pc++);
         if (v < NUM_VARS) vars[v] += d;
         break;
       }
       case 5: { // IF_VAR
-        uint8_t v = codeAt(scriptPC++);
-        uint8_t cmp = codeAt(scriptPC++);
-        uint8_t val = codeAt(scriptPC++);
-        uint16_t elseAddr = codeAt(scriptPC) | ((uint16_t)codeAt(scriptPC + 1) << 8);
-        scriptPC += 2;
+        uint8_t v = codeAt(s.pc++);
+        uint8_t cmp = codeAt(s.pc++);
+        uint8_t val = codeAt(s.pc++);
+        uint16_t elseAddr = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
         uint8_t cur = v < NUM_VARS ? vars[v] : 0;
         bool pass;
         switch (cmp) {
@@ -576,41 +812,41 @@ void runScript() {
           case 4: pass = cur <= val; break;
           default: pass = cur >= val; break;
         }
-        if (!pass) scriptPC = elseAddr;
+        if (!pass) s.pc = elseAddr;
         break;
       }
       case 6: { // JUMP
-        uint16_t addr = codeAt(scriptPC) | ((uint16_t)codeAt(scriptPC + 1) << 8);
-        scriptPC = addr;
+        uint16_t addr = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc = addr;
         break;
       }
       case 7: { // TONE
-        uint16_t f = codeAt(scriptPC) | ((uint16_t)codeAt(scriptPC + 1) << 8);
-        scriptPC += 2;
-        uint8_t frames = codeAt(scriptPC++);
+        uint16_t f = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
+        uint8_t frames = codeAt(s.pc++);
         stopSong(); // a direct tone interrupts the current song
         sound.tone(f, (uint16_t)(((uint32_t)frames * 50) / 3));
         break;
       }
       case 8: // WAIT
-        scriptWait = codeAt(scriptPC++);
+        s.wait = codeAt(s.pc++);
         return;
       case 9: case 10: { // ACTOR_HIDE / ACTOR_SHOW
-        uint8_t idx = codeAt(scriptPC++);
-        if (idx == 0xFF) idx = scriptSelf;
+        uint8_t idx = codeAt(s.pc++);
+        if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) actors[idx].hidden = (op == 9);
         break;
       }
       case 11: { // SET_TILE
-        uint8_t x = codeAt(scriptPC++);
-        uint8_t y = codeAt(scriptPC++);
-        uint8_t t = codeAt(scriptPC++);
+        uint8_t x = codeAt(s.pc++);
+        uint8_t y = codeAt(s.pc++);
+        uint8_t t = codeAt(s.pc++);
         setTile(x, y, t);
         break;
       }
       case 12: { // PLAYER_POS
-        uint8_t x = codeAt(scriptPC++);
-        uint8_t y = codeAt(scriptPC++);
+        uint8_t x = codeAt(s.pc++);
+        uint8_t y = codeAt(s.pc++);
         player.px = x * TILE_PX;
         player.py = y * TILE_PX;
         player.tx = x;
@@ -620,11 +856,11 @@ void runScript() {
         break;
       }
       case 13: { // ACTOR_MOVE
-        uint8_t idx = codeAt(scriptPC++);
-        uint8_t x = codeAt(scriptPC++);
-        uint8_t y = codeAt(scriptPC++);
-        uint8_t flags = codeAt(scriptPC++);
-        if (idx == 0xFF) idx = scriptSelf;
+        uint8_t idx = codeAt(s.pc++);
+        uint8_t x = codeAt(s.pc++);
+        uint8_t y = codeAt(s.pc++);
+        uint8_t flags = codeAt(s.pc++);
+        if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) {
           ActorState& a = actors[idx];
           a.tx = x; a.ty = y;
@@ -635,15 +871,15 @@ void runScript() {
             a.scriptMove = false;
           } else {
             a.scriptMove = true;
-            scriptWaitActor = idx;
+            s.waitActor = idx;
             return; // block until the actor arrives
           }
         }
         break;
       }
       case 14: { // PLAY_SONG
-        uint8_t idx = codeAt(scriptPC++);
-        uint8_t flags = codeAt(scriptPC++);
+        uint8_t idx = codeAt(s.pc++);
+        uint8_t flags = codeAt(s.pc++);
         playSong(idx, flags & 1);
         break;
       }
@@ -655,11 +891,12 @@ void runScript() {
         break;
       case 17: // LOAD_GAME
         if (loadGame()) {
-          if (!scriptActive) return;
+          if (&s != &script) { s.active = false; return; }
+          if (!s.active) return;
         }
         break;
       case 18: { // SAVE_CHECK
-        uint8_t v = codeAt(scriptPC++);
+        uint8_t v = codeAt(s.pc++);
         if (v < NUM_VARS) vars[v] = saveExists() ? 1 : 0;
         break;
       }
@@ -667,10 +904,10 @@ void runScript() {
         deleteSave();
         break;
       case 20: { // SET_LED
-        uint8_t mode = codeAt(scriptPC++);
-        uint8_t r = codeAt(scriptPC++);
-        uint8_t g = codeAt(scriptPC++);
-        uint8_t b = codeAt(scriptPC++);
+        uint8_t mode = codeAt(s.pc++);
+        uint8_t r = codeAt(s.pc++);
+        uint8_t g = codeAt(s.pc++);
+        uint8_t b = codeAt(s.pc++);
         if (mode == 1) {
           // Digital: hand the pins back from PWM first, then switch channels.
           arduboy.freeRGBled();
@@ -683,11 +920,11 @@ void runScript() {
         break;
       }
       case 22: { // SET_ACTOR_SPRITE
-        uint8_t idx = codeAt(scriptPC++);
-        uint8_t spriteIdx = codeAt(scriptPC++);
-        if (idx == 0xFF) idx = scriptSelf;
+        uint8_t idx = codeAt(s.pc++);
+        uint8_t spriteIdx = codeAt(s.pc++);
+        if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) {
-          actors[idx].def.spriteIdx = spriteIdx;
+          actors[idx].spriteIdx = spriteIdx;
           // The new sprite may have fewer frames than the old one.
           if (actors[idx].frame >= pgm_read_byte(&spriteFrameCount[spriteIdx])) {
             actors[idx].frame = 0;
@@ -696,9 +933,9 @@ void runScript() {
         break;
       }
       case 23: { // ATTACH_SCRIPT
-        uint8_t btn = codeAt(scriptPC++);
-        uint8_t flags = codeAt(scriptPC++);
-        uint8_t idx = codeAt(scriptPC++);
+        uint8_t btn = codeAt(s.pc++);
+        uint8_t flags = codeAt(s.pc++);
+        uint8_t idx = codeAt(s.pc++);
         if (btn < NUM_BUTTONS) {
           buttonScript[btn] = idx;
           if (flags & ATTACH_OVERRIDE) buttonOverride |= (1 << btn);
@@ -707,7 +944,7 @@ void runScript() {
         break;
       }
       case 24: { // REMOVE_BUTTON_SCRIPT
-        uint8_t btn = codeAt(scriptPC++);
+        uint8_t btn = codeAt(s.pc++);
         if (btn < NUM_BUTTONS) {
           buttonScript[btn] = 0xFF;
           buttonOverride &= ~(1 << btn);
@@ -715,32 +952,115 @@ void runScript() {
         break;
       }
       case 25: // WAIT_INPUT
-        scriptWaitInput = codeAt(scriptPC++);
+        s.waitInput = codeAt(s.pc++);
         return; // block until one of them is pressed
       case 26: { // IF_INPUT
-        uint8_t mask = codeAt(scriptPC++);
-        uint16_t elseAddr = codeAt(scriptPC) | ((uint16_t)codeAt(scriptPC + 1) << 8);
-        scriptPC += 2;
+        uint8_t mask = codeAt(s.pc++);
+        uint16_t elseAddr = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
         // Held right now — this checks once and never waits.
-        if (!arduboy.pressed(arduboyMask(mask))) scriptPC = elseAddr;
+        if (!arduboy.pressed(arduboyMask(mask))) s.pc = elseAddr;
         break;
       }
+      case 27: { // SET_ACTOR_DIR
+        uint8_t idx = codeAt(s.pc++);
+        uint8_t dir = codeAt(s.pc++);
+        if (idx == 0xFF) idx = s.self;
+        if (idx < actorCount) actors[idx].facing = dir;
+        break;
+      }
+      case 28: { // SET_ACTOR_SPEED
+        uint8_t idx = codeAt(s.pc++);
+        uint8_t speed = codeAt(s.pc++);
+        if (idx == 0xFF) idx = s.self;
+        if (idx < actorCount) { actors[idx].speed = speed; actors[idx].subTick = 0; }
+        break;
+      }
+      case 29: { // ACTOR_EFFECT
+        uint8_t idx = codeAt(s.pc++);
+        uint8_t effect = codeAt(s.pc++);
+        uint8_t frames = codeAt(s.pc++);
+        if (idx == 0xFF) idx = s.self;
+        if (idx < actorCount) { actors[idx].effect = effect; actors[idx].effectFrames = frames; }
+        break;
+      }
+      case 30: { // LAUNCH_PROJECTILE
+        uint8_t src = codeAt(s.pc++);
+        uint8_t spriteIdx = codeAt(s.pc++);
+        uint8_t dir = codeAt(s.pc++);
+        uint8_t speed = codeAt(s.pc++);
+        uint8_t life = codeAt(s.pc++);
+        uint8_t mask = codeAt(s.pc++);
+        if (src == PROJECTILE_SRC_SELF) src = s.self;
+        if (src == PROJECTILE_SRC_PLAYER || src < actorCount) {
+          launchProjectile(src, spriteIdx, dir, speed, life, mask);
+        }
+        break;
+      }
+      case 31: { // PUSH_SCENE
+        uint8_t sc = codeAt(s.pc++);
+        uint8_t x = codeAt(s.pc++);
+        uint8_t y = codeAt(s.pc++);
+        uint8_t speed = codeAt(s.pc++);
+        if (sceneStackTop < SCENE_STACK_DEPTH) {
+          sceneStack[sceneStackTop].scene = sceneIdx;
+          sceneStack[sceneStackTop].x = (player.px + TILE_PX / 2) / TILE_PX;
+          sceneStack[sceneStackTop].y = (player.py + TILE_PX / 2) / TILE_PX;
+          sceneStackTop++;
+        }
+        loadScene(sc, x, y, true);
+        fadeLevel = FADE_LEVELS;
+        startFade(0, speed);
+        if (&s != &script) { s.active = false; return; }
+        if (!s.active) return;
+        break;
+      }
+      case 32: // POP_SCENE
+      case 33: { // POP_ALL_SCENES
+        uint8_t speed = codeAt(s.pc++);
+        if (sceneStackTop == 0) break; // nothing pushed — carry on
+        uint8_t at = (op == 33) ? 0 : sceneStackTop - 1;
+        SceneStackEntry back = sceneStack[at];
+        sceneStackTop = (op == 33) ? 0 : sceneStackTop - 1;
+        loadScene(back.scene, back.x, back.y, true);
+        fadeLevel = FADE_LEVELS;
+        startFade(0, speed);
+        if (&s != &script) { s.active = false; return; }
+        if (!s.active) return;
+        break;
+      }
+      case 34: // FADE_IN
+      case 35: { // FADE_OUT
+        uint8_t speed = codeAt(s.pc++);
+        startFade(op == 35 ? FADE_LEVELS : 0, speed);
+        s.waitFade = true;
+        return; // block until the fade finishes
+      }
       case 21: { // MENU
-        menuVar = codeAt(scriptPC++);
-        menuCount = codeAt(scriptPC++);
-        menuFlags = codeAt(scriptPC++);
+        menuVar = codeAt(s.pc++);
+        menuCount = codeAt(s.pc++);
+        menuFlags = codeAt(s.pc++);
         if (menuCount > MAX_MENU_OPTIONS) menuCount = MAX_MENU_OPTIONS;
         for (uint8_t i = 0; i < menuCount; i++) {
-          menuLabels[i] = (const char*)pgm_read_ptr(&strings[codeAt(scriptPC++)]);
+          menuLabels[i] = (const char*)pgm_read_ptr(&strings[codeAt(s.pc++)]);
         }
         menuSel = 0;
         menuActive = true;
         return; // block until the player chooses
       }
       default:
-        scriptActive = false; // corrupt bytecode — bail out
+        s.active = false; // corrupt bytecode — bail out
     }
   }
+}
+
+// Pixels this actor moves this frame. Speed 0 is the half-speed code: one
+// pixel every other frame. Called once per actor per frame so the carry
+// toggles at the right rate.
+int16_t actorStep(ActorState& a) {
+  if (a.speed != 0) return a.speed;
+  a.subTick ^= 1;
+  return a.subTick;
 }
 
 int16_t moveToward(int16_t cur, int16_t goal, int16_t speed) {
@@ -784,8 +1104,8 @@ void updatePlayer() {
 
   if (arduboy.justPressed(A_BUTTON) && !(blocked & A_BUTTON)) {
     int8_t ai = actorAt(cx + player.fx, cy + player.fy, -1);
-    if (ai >= 0 && actors[ai].def.script != NO_SCRIPT) {
-      startScript(actors[ai].def.script, ai);
+    if (ai >= 0 && actors[ai].def.interact != NO_SCRIPT) {
+      startScript(actors[ai].def.interact, ai);
     }
   }
 }
@@ -800,11 +1120,16 @@ void checkTriggers() {
     memcpy_P(&t, &curScene.triggers[i], sizeof(TriggerDef));
     if (cx >= t.x && cx < t.x + t.w && cy >= t.y && cy < t.y + t.h) { hit = i; break; }
   }
+  if (hit != armedTrigger && armedTrigger >= 0) {
+    // Stepping out of an area — or straight from one into another.
+    memcpy_P(&t, &curScene.triggers[armedTrigger], sizeof(TriggerDef));
+    if (t.leave != NO_SCRIPT) queueScript(t.leave, 0xFF);
+  }
   if (hit < 0) { armedTrigger = -1; return; }
   if (hit != armedTrigger) {
     armedTrigger = hit;
     memcpy_P(&t, &curScene.triggers[hit], sizeof(TriggerDef));
-    if (t.script != NO_SCRIPT) startScript(t.script, 0xFF);
+    if (t.enter != NO_SCRIPT) queueScript(t.enter, 0xFF);
   }
 }
 
@@ -823,8 +1148,10 @@ void updateActors(bool allowMove) {
   int8_t pcy = (player.py + TILE_PX / 2) / TILE_PX;
   for (uint8_t i = 0; i < actorCount; i++) {
     ActorState& a = actors[i];
+    if (a.effectFrames > 0 && --a.effectFrames == 0) a.effect = 0;
     if (a.hidden) continue;
-    uint8_t frames = pgm_read_byte(&spriteFrameCount[a.def.spriteIdx]);
+    int16_t step = actorStep(a);
+    uint8_t frames = pgm_read_byte(&spriteFrameCount[a.spriteIdx]);
     if ((a.def.flags & 2) && frames > 1) {
       a.anim++;
       if (a.anim >= ANIM_INTERVAL) { a.anim = 0; a.frame = (a.frame + 1) % frames; }
@@ -833,16 +1160,16 @@ void updateActors(bool allowMove) {
     // its target (x first, then y), ignoring collisions.
     if (a.scriptMove) {
       int16_t gx = a.tx * TILE_PX, gy = a.ty * TILE_PX;
-      if (a.px != gx) a.px = moveToward(a.px, gx, ACTOR_SPEED);
-      else if (a.py != gy) a.py = moveToward(a.py, gy, ACTOR_SPEED);
+      if (a.px != gx) a.px = moveToward(a.px, gx, step);
+      else if (a.py != gy) a.py = moveToward(a.py, gy, step);
       if (a.px == gx && a.py == gy) { a.scriptMove = false; a.moving = false; }
       continue;
     }
     if (!allowMove || a.def.movement == 0) continue;
     if (a.moving) {
       int16_t gx = a.tx * TILE_PX, gy = a.ty * TILE_PX;
-      a.px = moveToward(a.px, gx, ACTOR_SPEED);
-      a.py = moveToward(a.py, gy, ACTOR_SPEED);
+      a.px = moveToward(a.px, gx, step);
+      a.py = moveToward(a.py, gy, step);
       if (a.px == gx && a.py == gy) a.moving = false;
       continue;
     }
@@ -904,6 +1231,46 @@ void drawTextbox() {
   }
 }
 
+// Ordered dither over the whole scene. Dialogue and menus are drawn after this
+// so a fade never swallows the text the player is reading. Working straight on
+// the frame buffer keeps it to one pass over the 1KB of screen RAM.
+void applyFade() {
+  if (fadeLevel == 0) return;
+  uint8_t* buf = arduboy.getBuffer();
+  if (fadeLevel >= FADE_LEVELS) { memset(buf, 0, WIDTH * HEIGHT / 8); return; }
+  for (uint8_t page = 0; page < HEIGHT / 8; page++) {
+    for (uint8_t x = 0; x < WIDTH; x++) {
+      uint8_t b = buf[page * WIDTH + x];
+      if (!b) continue;
+      for (uint8_t bit = 0; bit < 8; bit++) {
+        uint8_t y = page * 8 + bit;
+        if (pgm_read_byte(&bayer4[(y & 3) * 4 + (x & 3)]) < fadeLevel) b &= ~(1 << bit);
+      }
+      buf[page * WIDTH + x] = b;
+    }
+  }
+}
+
+// On Update scripts run every frame regardless of what the blocking VM is
+// doing, and must finish within the frame — the compiler strips anything that
+// could pause them.
+void runUpdateScripts() {
+  uint8_t sceneBefore = sceneIdx;
+  for (uint8_t i = 0; i < actorCount; i++) {
+    if (actors[i].hidden || actors[i].def.update == NO_SCRIPT) continue;
+    scratch.active = true;
+    scratch.pc = pgm_read_word(&scriptOffsets[actors[i].def.update]);
+    scratch.self = i;
+    scratch.wait = 0;
+    scratch.waitActor = -1;
+    scratch.waitInput = 0;
+    scratch.waitFade = false;
+    runScript(scratch);
+    // A scene change rebuilds the actor table, so these indices are stale.
+    if (sceneIdx != sceneBefore) return;
+  }
+}
+
 void drawFrame() {
   arduboy.clear();
   uint8_t tx0 = camX / TILE_PX;
@@ -920,12 +1287,23 @@ void drawFrame() {
   for (uint8_t i = 0; i < actorCount; i++) {
     ActorState& a = actors[i];
     if (a.hidden) continue;
-    const uint8_t* spr = (const uint8_t*)pgm_read_ptr(&sprites[a.def.spriteIdx]);
-    Sprites::drawSelfMasked(a.px - camX, a.py - camY, spr, a.frame);
+    // Flicker blanks the actor on alternate pairs of frames; shake jitters it
+    // one pixel sideways. Both are pure draw-time effects.
+    if (a.effect == 1 && ((arduboy.frameCount >> 1) & 1)) continue;
+    int8_t shake = (a.effect == 2) ? ((arduboy.frameCount & 1) ? 1 : -1) : 0;
+    const uint8_t* spr = (const uint8_t*)pgm_read_ptr(&sprites[a.spriteIdx]);
+    Sprites::drawSelfMasked(a.px + shake - camX, a.py - camY, spr, a.frame);
+  }
+  for (uint8_t i = 0; i < MAX_PROJECTILES; i++) {
+    Projectile& p = projectiles[i];
+    if (!p.active) continue;
+    const uint8_t* spr = (const uint8_t*)pgm_read_ptr(&sprites[p.spriteIdx]);
+    Sprites::drawSelfMasked(p.px - camX, p.py - camY, spr, 0);
   }
   const uint8_t* pspr = (const uint8_t*)pgm_read_ptr(&sprites[PLAYER_SPRITE]);
   Sprites::drawSelfMasked(player.px - camX, player.py - camY, pspr, player.frame);
-  if (scriptActive && textStr != nullptr) drawTextbox();
+  applyFade();
+  if (script.active && textStr != nullptr) drawTextbox();
   if (menuActive) drawMenu();
 }
 
@@ -950,16 +1328,24 @@ void loop() {
     sound.tones(s);
   }
 
-  if (scriptActive) {
-    runScript();
+  stepFade();
+
+  // A finished init script hands over to the next one queued by loadScene.
+  if (!script.active) startNextQueued();
+
+  if (script.active) {
+    runScript(script);
   } else {
     // Default actions run first (with overridden buttons masked out), then any
     // script attached to a button that was just pressed takes over.
     updatePlayer();
     checkTriggers();
-    if (!scriptActive) checkButtonScripts();
+    if (!script.active) checkCollisions();
+    if (!script.active) checkButtonScripts();
   }
-  updateActors(!scriptActive);
+  updateActors(!script.active);
+  updateProjectiles();
+  runUpdateScripts();
   updateCamera();
 
   drawFrame();

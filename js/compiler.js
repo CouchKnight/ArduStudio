@@ -7,6 +7,9 @@ import {
   SCENE_W, SCENE_H, MAX_VARIABLES,
   sceneCols, sceneRows, buttonIndex,
   pixelsToBytes, sceneById, spriteById,
+  ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS, SCENE_SCRIPT_SLOTS, NON_BLOCKING_SLOTS,
+  directionCode, effectCode, collisionGroupCode,
+  PROJECTILE_DIRS, PROJECTILE_DIR_SOURCE, ACTOR_SPEEDS,
 } from './model.js';
 
 export const OP = {
@@ -37,7 +40,28 @@ export const OP = {
   REMOVE_BUTTON_SCRIPT: 24, // buttonIdx
   WAIT_INPUT: 25,   // buttonMask — blocks until any of these is pressed
   IF_INPUT: 26,     // buttonMask, elseAddrLo, elseAddrHi (buttons currently held)
+  SET_ACTOR_DIR: 27,    // actorIdx (0xFF = self), dir (0=down 1=up 2=left 3=right)
+  SET_ACTOR_SPEED: 28,  // actorIdx (0xFF = self), speed (0 = half, else px/frame)
+  ACTOR_EFFECT: 29,     // actorIdx (0xFF = self), effect (1=flicker 2=shake), frames
+  LAUNCH_PROJECTILE: 30, // srcIdx (0xFF = self, 0xFE = player), spriteIdx, dir, speed, life, collideMask
+  PUSH_SCENE: 31,   // sceneIdx, x, y, fadeSpeed
+  POP_SCENE: 32,    // fadeSpeed
+  POP_ALL_SCENES: 33, // fadeSpeed
+  FADE_IN: 34,      // fadeSpeed
+  FADE_OUT: 35,     // fadeSpeed
 };
+
+// Events that stop a script mid-flight. They are meaningless in a slot that
+// runs to completion every frame (On Update), so the compiler drops them there
+// with a warning rather than letting the runtime deadlock.
+export const BLOCKING_EVENTS = new Set([
+  'WAIT', 'TEXT', 'MENU', 'CHOICE', 'WAIT_INPUT', 'PUSH_SCENE', 'POP_SCENE',
+  'POP_ALL_SCENES', 'FADE_IN', 'FADE_OUT',
+]);
+
+// The launcher of a projectile, when it is not an actor in the scene.
+export const PROJECTILE_SRC_SELF = 0xff;
+export const PROJECTILE_SRC_PLAYER = 0xfe;
 
 export const ATTACH_OVERRIDE = 1;
 export const NUM_BUTTONS = 6;
@@ -129,9 +153,26 @@ export function compileProject(project) {
   const emit = (...bytes) => { for (const b of bytes) code.push(b & 0xff); };
   const emitU16 = (v) => { code.push(v & 0xff, (v >> 8) & 0xff); };
 
+  // Resolve an event's actor target to an index, or 0xFF for "self".
+  // Returns -1 when the target is missing, having already warned.
+  function actorTarget(ev, scene, ctx, label) {
+    if (!ev.target || ev.target === 'self') return 0xff;
+    const ai = scene ? scene.actors.findIndex((a) => a.id === ev.target) : -1;
+    if (ai < 0) { warnings.push(`${ctx}: ${label} target not in this scene — skipped`); return -1; }
+    return ai;
+  }
+
+  // Fade speed: 0 is fastest. Stored as frames spent on each dither step.
+  const fadeSpeed = (v) => Math.max(0, Math.min(7, v === undefined ? 2 : v | 0));
+
   // Compile one event list; `scene` provides actor-index context.
-  function compileEvents(events, scene, ctx) {
+  // `nonBlocking` marks a slot that runs to completion every frame.
+  function compileEvents(events, scene, ctx, nonBlocking) {
     for (const ev of events || []) {
+      if (nonBlocking && BLOCKING_EVENTS.has(ev.type)) {
+        warnings.push(`${ctx}: ${ev.type} cannot pause an On Update script, which must finish in one frame — skipped`);
+        continue;
+      }
       switch (ev.type) {
         case 'TEXT':
           emit(OP.TEXT, internString(ev.text || ''));
@@ -160,11 +201,11 @@ export function compileProject(project) {
           if (idx === undefined) { warnings.push(`${ctx}: If Variable has no variable selected — skipped`); break; }
           emit(OP.IF_VAR, idx, CMP[ev.cmp] ?? 0, byte(ev.value));
           const elsePatch = code.length; emitU16(0);
-          compileEvents(ev.then, scene, ctx);
+          compileEvents(ev.then, scene, ctx, nonBlocking);
           emit(OP.JUMP);
           const endPatch = code.length; emitU16(0);
           patchU16(code, elsePatch, code.length);
-          compileEvents(ev.else, scene, ctx);
+          compileEvents(ev.else, scene, ctx, nonBlocking);
           patchU16(code, endPatch, code.length);
           break;
         }
@@ -286,11 +327,11 @@ export function compileProject(project) {
           if (!mask) { warnings.push(`${ctx}: If Joypad Input Held has no buttons selected — skipped`); break; }
           emit(OP.IF_INPUT, mask);
           const elsePatch = code.length; emitU16(0);
-          compileEvents(ev.then, scene, ctx);
+          compileEvents(ev.then, scene, ctx, nonBlocking);
           emit(OP.JUMP);
           const endPatch = code.length; emitU16(0);
           patchU16(code, elsePatch, code.length);
-          compileEvents(ev.else, scene, ctx);
+          compileEvents(ev.else, scene, ctx, nonBlocking);
           patchU16(code, endPatch, code.length);
           break;
         }
@@ -309,6 +350,65 @@ export function compileProject(project) {
           emit(internRaw(ev.falseLabel));
           break;
         }
+        case 'SET_ACTOR_DIR': {
+          const idx = actorTarget(ev, scene, ctx, 'Set Actor Direction');
+          if (idx < 0) break;
+          emit(OP.SET_ACTOR_DIR, idx, directionCode(ev.direction));
+          break;
+        }
+        case 'SET_ACTOR_SPEED': {
+          const idx = actorTarget(ev, scene, ctx, 'Set Actor Movement Speed');
+          if (idx < 0) break;
+          const speed = ACTOR_SPEEDS.some((s) => s.value === ev.speed) ? ev.speed : 1;
+          emit(OP.SET_ACTOR_SPEED, idx, speed);
+          break;
+        }
+        case 'ACTOR_EFFECT': {
+          const idx = actorTarget(ev, scene, ctx, 'Actor Effects');
+          if (idx < 0) break;
+          emit(OP.ACTOR_EFFECT, idx, effectCode(ev.effect), byte(ev.frames || 30));
+          break;
+        }
+        case 'LAUNCH_PROJECTILE': {
+          const spriteIdx = project.sprites.findIndex((s) => s.id === ev.spriteId);
+          if (spriteIdx < 0) { warnings.push(`${ctx}: Launch Projectile has no sprite selected — skipped`); break; }
+          let src = PROJECTILE_SRC_SELF;
+          if (ev.source === 'player') src = PROJECTILE_SRC_PLAYER;
+          else if (ev.source && ev.source !== 'self') {
+            src = scene ? scene.actors.findIndex((a) => a.id === ev.source) : -1;
+            if (src < 0) { warnings.push(`${ctx}: Launch Projectile source actor is not in this scene — skipped`); break; }
+          }
+          let dir = PROJECTILE_DIR_SOURCE;
+          if (ev.direction && ev.direction !== 'source') {
+            const d = PROJECTILE_DIRS.find((x) => x.key === ev.direction);
+            if (!d) { warnings.push(`${ctx}: Launch Projectile has an unknown direction — skipped`); break; }
+            dir = d.code;
+          }
+          const speed = Math.max(1, Math.min(8, ev.speed | 0 || 2));
+          const life = Math.max(1, Math.min(255, ev.life | 0 || 60));
+          emit(OP.LAUNCH_PROJECTILE, src, spriteIdx, dir, speed, life, byte(ev.collideWith) & 0x0f);
+          break;
+        }
+        case 'PUSH_SCENE': {
+          const idx = sceneIndex.get(ev.sceneId);
+          if (idx === undefined) { warnings.push(`${ctx}: Push Scene points at a missing scene — skipped`); break; }
+          const target = project.scenes[idx];
+          emit(OP.PUSH_SCENE, idx, clampTile(ev.x, sceneCols(target)), clampTile(ev.y, sceneRows(target)),
+            fadeSpeed(ev.fade));
+          break;
+        }
+        case 'POP_SCENE':
+          emit(OP.POP_SCENE, fadeSpeed(ev.fade));
+          break;
+        case 'POP_ALL_SCENES':
+          emit(OP.POP_ALL_SCENES, fadeSpeed(ev.fade));
+          break;
+        case 'FADE_IN':
+          emit(OP.FADE_IN, fadeSpeed(ev.fade));
+          break;
+        case 'FADE_OUT':
+          emit(OP.FADE_OUT, fadeSpeed(ev.fade));
+          break;
         case 'END_SCRIPT':
           emit(OP.END);
           break;
@@ -325,30 +425,46 @@ export function compileProject(project) {
   // emit a reference immediately, while the offset is filled in on drain.
   const scriptOffsets = [];
   const pendingScripts = [];
-  function addScript(events, scene, ctx) {
+  function addScript(events, scene, ctx, nonBlocking) {
     if (!events || !events.length) return NO_SCRIPT;
     const idx = scriptOffsets.length;
     if (idx >= 255) throw new Error('Too many scripts (max 255)');
     scriptOffsets.push(0); // patched in drainScripts()
-    pendingScripts.push({ idx, events, scene, ctx });
+    pendingScripts.push({ idx, events, scene, ctx, nonBlocking });
     return idx;
   }
   function drainScripts() {
     while (pendingScripts.length) {
       const job = pendingScripts.shift();
       scriptOffsets[job.idx] = code.length;
-      compileEvents(job.events, job.scene, job.ctx);
+      compileEvents(job.events, job.scene, job.ctx, job.nonBlocking);
       emit(OP.END);
     }
   }
 
+  // Register every lifecycle slot of one entity, returning { slotKey: index }.
+  function addSlots(entity, slots, scene, what) {
+    const out = {};
+    for (const { key, label } of slots) {
+      out[key] = addScript(entity.scripts[key], scene, `${what} ${label}`,
+        NON_BLOCKING_SLOTS.includes(key));
+    }
+    return out;
+  }
+
   const scenes = project.scenes.map((scene, si) => {
     const cw = sceneCols(scene), ch = sceneRows(scene);
-    const onEnterIdx = addScript(scene.onEnter, scene, `Scene "${scene.name}" on-enter`);
+    const where = `in "${scene.name}"`;
+    const sceneSlots = addSlots(scene, SCENE_SCRIPT_SLOTS, scene, `Scene "${scene.name}"`);
     const actors = scene.actors.map((a) => {
       const sprite = spriteById(project, a.spriteId);
       let spriteIdx = project.sprites.indexOf(sprite);
-      if (spriteIdx < 0) { warnings.push(`Actor "${a.name}" in "${scene.name}" has no sprite — using sprite 0`); spriteIdx = 0; }
+      if (spriteIdx < 0) { warnings.push(`Actor "${a.name}" ${where} has no sprite — using sprite 0`); spriteIdx = 0; }
+      const slots = addSlots(a, ACTOR_SCRIPT_SLOTS, scene, `Actor "${a.name}" ${where}`);
+      const group = collisionGroupCode(a.collisionGroup);
+      if (!group && a.collideWith) {
+        warnings.push(`Actor "${a.name}" ${where} collides with something but is in no collision group — it can still be hit, but nothing can be hit by it`);
+      }
       return {
         spriteIdx,
         x: clampTile(a.x, cw),
@@ -356,7 +472,11 @@ export function compileProject(project) {
         movement: MOVEMENT_CODES[a.movement] ?? 0,
         solid: a.solid ? 1 : 0,
         animate: a.animate ? 1 : 0,
-        scriptIdx: addScript(a.script, scene, `Actor "${a.name}" in "${scene.name}"`),
+        facing: directionCode(a.facing),
+        speed: ACTOR_SPEEDS.some((s) => s.value === a.speed) ? a.speed : 1,
+        group,
+        collideWith: byte(a.collideWith) & 0x0f,
+        scripts: slots,
       };
     });
     const triggers = scene.triggers.map((t) => ({
@@ -364,9 +484,12 @@ export function compileProject(project) {
       y: clampTile(t.y, ch),
       w: Math.max(1, Math.min(cw, t.w | 0)),
       h: Math.max(1, Math.min(ch, t.h | 0)),
-      scriptIdx: addScript(t.script, scene, `Trigger "${t.name}" in "${scene.name}"`),
+      scripts: addSlots(t, TRIGGER_SCRIPT_SLOTS, scene, `Trigger "${t.name}" ${where}`),
     }));
-    return { name: scene.name, index: si, cols: cw, rows: ch, tiles: scene.tiles.slice(), actors, triggers, onEnterIdx };
+    return {
+      name: scene.name, index: si, cols: cw, rows: ch,
+      tiles: scene.tiles.slice(), actors, triggers, scripts: sceneSlots,
+    };
   });
 
   drainScripts();

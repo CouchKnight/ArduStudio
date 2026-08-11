@@ -2,9 +2,21 @@
 // Renders an editable list of event cards; IF blocks nest recursively.
 
 import { el, clear } from './ui.js';
-import { makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS } from './model.js';
+import {
+  makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS,
+  DIRECTIONS, PROJECTILE_DIRS, ACTOR_SPEEDS, ACTOR_EFFECTS, COLLIDE_TARGETS,
+} from './model.js';
 
 const CMP_OPTIONS = ['==', '!=', '<', '>', '<=', '>='];
+
+// Fade speeds, slowest last. The value is frames spent on each dither step.
+const FADE_SPEEDS = [
+  { value: 0, label: 'Instant' },
+  { value: 1, label: 'Fast' },
+  { value: 2, label: 'Normal' },
+  { value: 4, label: 'Slow' },
+  { value: 7, label: 'Very slow' },
+];
 
 // Build the "+ Add Event" dropdown.
 function addEventSelect(onAdd) {
@@ -52,6 +64,20 @@ function buttonChecks(mask, onChange) {
       title: b.key.toUpperCase(),
       onclick: () => onChange(on ? (mask & ~b.bit) : (mask | b.bit)),
     }, b.label));
+  }
+  return row;
+}
+
+// A multi-select grid of collision groups returning a bitmask.
+function collideChecks(mask, onChange) {
+  const row = el('div', { class: 'button-picker' });
+  for (const t of COLLIDE_TARGETS) {
+    const on = (mask & t.bit) !== 0;
+    row.append(el('button', {
+      class: 'btn-key wide' + (on ? ' active' : ''),
+      type: 'button',
+      onclick: () => onChange(on ? (mask & ~t.bit) : (mask | t.bit)),
+    }, t.label));
   }
   return row;
 }
@@ -126,6 +152,44 @@ function renderEventCard(app, scene, list, index, rerender) {
     onchange: (e) => { ev[key] = parseInt(e.target.value, 10) || 0; changed(); },
   });
 
+  // "Self, or one of the actors in this scene" — the target of every actor
+  // event. `extra` prepends further choices (Launch Projectile adds Player).
+  const actorSelect = (key = 'target', extra = []) => {
+    const sel = el('select', { onchange: () => { ev[key] = sel.value; changed(); } });
+    sel.append(el('option', { value: 'self', selected: ev[key] === 'self' }, 'Self (this actor)'));
+    for (const [value, label] of extra) {
+      sel.append(el('option', { value, selected: ev[key] === value }, label));
+    }
+    if (scene) {
+      for (const a of scene.actors) {
+        sel.append(el('option', { value: a.id, selected: ev[key] === a.id }, a.name));
+      }
+    }
+    return sel;
+  };
+
+  // A <select> over [{value, label}] writing an integer field.
+  const optionSelect = (key, options) => {
+    const sel = el('select', {
+      onchange: () => { ev[key] = parseInt(sel.value, 10); changed(); },
+    });
+    for (const o of options) {
+      sel.append(el('option', { value: o.value, selected: ev[key] === o.value }, o.label));
+    }
+    return sel;
+  };
+
+  // A <select> over [{key, label}] writing a string field.
+  const keySelect = (field, options) => {
+    const sel = el('select', { onchange: () => { ev[field] = sel.value; changed(); } });
+    for (const o of options) {
+      sel.append(el('option', { value: o.key, selected: ev[field] === o.key }, o.label));
+    }
+    return sel;
+  };
+
+  const fadeField = () => el('label', {}, 'Fade speed', optionSelect('fade', FADE_SPEEDS));
+
   switch (ev.type) {
     case 'TEXT': {
       const ta = el('textarea', { rows: 2, spellcheck: false, value: ev.text });
@@ -177,25 +241,11 @@ function renderEventCard(app, scene, list, index, rerender) {
       break;
     case 'ACTOR_HIDE':
     case 'ACTOR_SHOW': {
-      const sel = el('select', { onchange: () => { ev.target = sel.value; changed(); } });
-      sel.append(el('option', { value: 'self', selected: ev.target === 'self' }, 'Self (this actor)'));
-      if (scene) {
-        for (const a of scene.actors) {
-          sel.append(el('option', { value: a.id, selected: ev.target === a.id }, a.name));
-        }
-      }
-      fields.append(el('label', {}, 'Actor', sel));
+      fields.append(el('label', {}, 'Actor', actorSelect()));
       break;
     }
     case 'ACTOR_MOVE': {
-      const sel = el('select', { onchange: () => { ev.target = sel.value; changed(); } });
-      sel.append(el('option', { value: 'self', selected: ev.target === 'self' }, 'Self (this actor)'));
-      if (scene) {
-        for (const a of scene.actors) {
-          sel.append(el('option', { value: a.id, selected: ev.target === a.id }, a.name));
-        }
-      }
-      fields.append(el('label', {}, 'Actor', sel));
+      fields.append(el('label', {}, 'Actor', actorSelect()));
       fields.append(el('label', {}, 'To X', numInput('x', 0, scene ? sceneCols(scene) - 1 : 63)));
       fields.append(el('label', {}, 'Y', numInput('y', 0, scene ? sceneRows(scene) - 1 : 31)));
       fields.append(el('label', {}, el('input', {
@@ -250,14 +300,7 @@ function renderEventCard(app, scene, list, index, rerender) {
       fields.append(el('span', { class: 'hint' }, 'Erases the saved game.'));
       break;
     case 'SET_ACTOR_SPRITE': {
-      const sel = el('select', { onchange: () => { ev.target = sel.value; changed(); } });
-      sel.append(el('option', { value: 'self', selected: ev.target === 'self' }, 'Self (this actor)'));
-      if (scene) {
-        for (const a of scene.actors) {
-          sel.append(el('option', { value: a.id, selected: ev.target === a.id }, a.name));
-        }
-      }
-      fields.append(el('label', {}, 'Actor', sel));
+      fields.append(el('label', {}, 'Actor', actorSelect()));
       const sprSel = el('select', { onchange: () => { ev.spriteId = sprSel.value; changed(); } });
       sprSel.append(el('option', { value: '' }, '(pick sprite)'));
       for (const s of project.sprites) {
@@ -404,6 +447,75 @@ function renderEventCard(app, scene, list, index, rerender) {
         "True sets the variable to 1, False to 0 — test it with an If Variable block."));
       break;
     }
+    case 'SET_ACTOR_DIR':
+      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Direction', keySelect('direction', DIRECTIONS)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Also decides which way Launch Projectile fires when it follows the actor.'));
+      break;
+    case 'SET_ACTOR_SPEED':
+      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Speed', optionSelect('speed', ACTOR_SPEEDS)));
+      break;
+    case 'ACTOR_EFFECT':
+      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Effect', keySelect('effect', ACTOR_EFFECTS)));
+      fields.append(el('label', {}, 'Frames', numInput('frames', 1, 255)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Flicker blinks the actor, shake jitters it sideways. 60 frames = 1s.'));
+      break;
+    case 'LAUNCH_PROJECTILE': {
+      fields.append(el('label', {}, 'Launch from', actorSelect('source', [['player', 'Player']])));
+      const sprSel = el('select', { onchange: () => { ev.spriteId = sprSel.value; changed(); } });
+      sprSel.append(el('option', { value: '' }, '(pick sprite)'));
+      for (const s of project.sprites) {
+        sprSel.append(el('option', { value: s.id, selected: ev.spriteId === s.id }, s.name));
+      }
+      fields.append(el('label', {}, 'Sprite', sprSel));
+      fields.append(el('label', {}, 'Direction', keySelect('direction',
+        [{ key: 'source', label: 'Follow the launcher' }, ...PROJECTILE_DIRS])));
+      fields.append(el('label', {}, 'Speed', numInput('speed', 1, 8)));
+      fields.append(el('label', {}, 'Lifetime', numInput('life', 1, 255)));
+      fields.append(el('label', { style: 'flex-basis:100%' }, 'Collides with',
+        collideChecks(ev.collideWith, (mask) => { ev.collideWith = mask; changed(); rerender(); })));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Speed is pixels per frame, lifetime is frames before it vanishes (60 = 1s). '
+        + 'It also dies on a solid tile. Six can be in flight at once.'));
+      break;
+    }
+    case 'PUSH_SCENE': {
+      const sel = el('select', { onchange: () => { ev.sceneId = sel.value; changed(); rerender(); } });
+      sel.append(el('option', { value: '' }, '(pick scene)'));
+      for (const s of project.scenes) {
+        sel.append(el('option', { value: s.id, selected: ev.sceneId === s.id }, s.name));
+      }
+      const target = project.scenes.find((s) => s.id === ev.sceneId);
+      fields.append(el('label', {}, 'Scene', sel));
+      fields.append(el('label', {}, 'X', numInput('x', 0, target ? sceneCols(target) - 1 : 63)));
+      fields.append(el('label', {}, 'Y', numInput('y', 0, target ? sceneRows(target) - 1 : 31)));
+      fields.append(fadeField());
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Remembers this scene and where the player is standing, so Pop Scene can come back. '
+        + 'Up to 8 deep.'));
+      break;
+    }
+    case 'POP_SCENE':
+      fields.append(fadeField());
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Returns to the scene the last Push Scene came from. Does nothing if none was pushed.'));
+      break;
+    case 'POP_ALL_SCENES':
+      fields.append(fadeField());
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Unwinds the whole stack back to the scene the first Push Scene came from.'));
+      break;
+    case 'FADE_IN':
+    case 'FADE_OUT':
+      fields.append(fadeField());
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        `Dithers the screen ${ev.type === 'FADE_OUT' ? 'to black' : 'back in'}; the script waits for it to finish. `
+        + 'Dialogue and menus stay readable through a fade.'));
+      break;
     case 'END_SCRIPT':
       fields.append(el('span', { class: 'hint' }, 'Stops this script immediately.'));
       break;

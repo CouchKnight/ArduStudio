@@ -5,7 +5,10 @@
 //
 // Usage: node tools/test_runtime.mjs
 
-import { makeDemoProject, makeEvent as makeEventOfType } from '../js/model.js';
+import {
+  makeDemoProject, makeEvent as makeEventOfType, normalizeProject,
+  makeActor as makeActorOfType,
+} from '../js/model.js';
 import { compileProject } from '../js/compiler.js';
 import { Emulator, BTN, memoryStorage } from '../js/emulator.js';
 
@@ -290,7 +293,7 @@ console.log('— RGB LED —');
   // Analog: the slime's pickup script flashes green then clears it.
   const proj = makeDemoProject();
   const led = proj.scenes[0].actors[0]; // villager, reused as a scratch script host
-  led.script = [
+  led.scripts.interact = [
     Object.assign(makeEventOfType('SET_LED'), { mode: 'analog', r: 255, g: 0, b: 128 }),
   ];
   const c2 = compileProject(proj);
@@ -301,7 +304,7 @@ console.log('— RGB LED —');
 
   // Digital: channels are on/off only.
   const proj3 = makeDemoProject();
-  proj3.scenes[0].actors[0].script = [
+  proj3.scenes[0].actors[0].scripts.interact = [
     Object.assign(makeEventOfType('SET_LED'), { mode: 'digital', dr: true, dg: false, db: true }),
   ];
   const e3 = new Emulator(compileProject(proj3), { onTone: () => {} });
@@ -315,7 +318,7 @@ console.log('— Display Menu —');
   // Four options in the right-hand column, B cancels.
   const proj = makeDemoProject();
   const v = proj.variables[0];
-  proj.scenes[0].actors[0].script = [Object.assign(makeEventOfType('MENU'), {
+  proj.scenes[0].actors[0].scripts.interact = [Object.assign(makeEventOfType('MENU'), {
     varId: v.id, layout: 'menu', options: ['Sword', 'Shield', 'Potion', 'Leave'],
     lastIsZero: false, cancelB: true,
   })];
@@ -353,7 +356,7 @@ console.log('— menu: last option sets 0, B disabled —');
 {
   const proj = makeDemoProject();
   const v = proj.variables[0];
-  proj.scenes[0].actors[0].script = [Object.assign(makeEventOfType('MENU'), {
+  proj.scenes[0].actors[0].scripts.interact = [Object.assign(makeEventOfType('MENU'), {
     varId: v.id, layout: 'dialogue', options: ['Buy', 'Sell', 'Exit'],
     lastIsZero: true, cancelB: false,
   })];
@@ -380,7 +383,7 @@ console.log('— Display Multiple Choice —');
 {
   const proj = makeDemoProject();
   const v = proj.variables[0];
-  proj.scenes[0].actors[0].script = [Object.assign(makeEventOfType('CHOICE'), {
+  proj.scenes[0].actors[0].scripts.interact = [Object.assign(makeEventOfType('CHOICE'), {
     varId: v.id, trueLabel: 'Yes', falseLabel: 'No',
   })];
   const c = compileProject(proj);
@@ -402,7 +405,7 @@ console.log('— Set Actor Sprite —');
   const proj = makeDemoProject();
   const ev = makeEventOfType('SET_ACTOR_SPRITE');
   ev.target = 'self'; ev.spriteId = proj.sprites[2].id; // Slime
-  proj.scenes[0].actors[0].script = [ev];
+  proj.scenes[0].actors[0].scripts.interact = [ev];
   const c = compileProject(proj);
   assert(c.warnings.length === 0, `compiles cleanly (${c.warnings.join('; ') || 'none'})`);
 
@@ -422,7 +425,7 @@ console.log('— Set Actor Sprite —');
   proj2.sprites.push({ id: 'spr_single', name: 'Single', width: 8, height: 8, frames: [proj2.sprites[0].frames[0]] });
   const ev2 = makeEventOfType('SET_ACTOR_SPRITE');
   ev2.target = 'self'; ev2.spriteId = 'spr_single';
-  proj2.scenes[0].actors[0].script = [ev2];
+  proj2.scenes[0].actors[0].scripts.interact = [ev2];
   const e3 = new Emulator(compileProject(proj2), { onTone: () => {} });
   e3.actors[0].frame = 1;
   runActorScript(e3, 0);
@@ -437,7 +440,7 @@ console.log('— Attach / Remove Button Script —');
   attach.button = 'b'; attach.override = false;
   const say = makeEventOfType('TEXT'); say.text = 'Menu!';
   attach.script = [say];
-  proj.scenes[0].onEnter = [attach];
+  proj.scenes[0].scripts.init = [attach];
   const c = compileProject(proj);
   assert(c.warnings.length === 0, `attach compiles cleanly (${c.warnings.join('; ') || 'none'})`);
 
@@ -459,7 +462,7 @@ console.log('— Attach / Remove Button Script —');
   attach2.button = 'b';
   attach2.script = [Object.assign(makeEventOfType('TEXT'), { text: 'Menu!' })];
   const remove = makeEventOfType('REMOVE_BUTTON_SCRIPT'); remove.button = 'b';
-  proj2.scenes[0].onEnter = [attach2, remove];
+  proj2.scenes[0].scripts.init = [attach2, remove];
   const e2 = new Emulator(compileProject(proj2), { onTone: () => {} });
   e2.setButtons(0); e2.step();
   for (let i = 0; i < 30 && e2.script.active; i++) { e2.setButtons(0); e2.step(); }
@@ -473,12 +476,12 @@ console.log('— button script override —');
   // Attach to RIGHT with override: the player must not walk right any more.
   const mk = (override) => {
     const proj = makeDemoProject();
-    proj.scenes[0].onEnter = [];
+    proj.scenes[0].scripts.init = [];
     const attach = makeEventOfType('ATTACH_SCRIPT');
     attach.button = 'right'; attach.override = override;
     attach.script = [Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 42 })];
     proj.scenes[0].triggers = [];
-    proj.scenes[0].onEnter = [attach];
+    proj.scenes[0].scripts.init = [attach];
     const e = new Emulator(compileProject(proj), { onTone: () => {} });
     e.setButtons(0); e.step();
     for (let i = 0; i < 20 && e.script.active; i++) { e.setButtons(0); e.step(); }
@@ -510,7 +513,7 @@ console.log('— Pause Script Until Input Pressed —');
   wait.mask = BTN.A | BTN.B;
   const after = makeEventOfType('SET_VAR');
   after.varId = proj.variables[0].id; after.value = 7;
-  proj.scenes[0].actors[0].script = [wait, after];
+  proj.scenes[0].actors[0].scripts.interact = [wait, after];
   const c = compileProject(proj);
   const e = new Emulator(c, { onTone: () => {} });
   runActorScript(e, 0, false);
@@ -530,7 +533,7 @@ console.log('— If Joypad Input Held —');
   iff.mask = BTN.B;
   iff.then = [Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 1 })];
   iff.else = [Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 2 })];
-  proj.scenes[0].actors[0].script = [iff];
+  proj.scenes[0].actors[0].scripts.interact = [iff];
   const c = compileProject(proj);
 
   // Not held -> false branch.
@@ -560,7 +563,7 @@ console.log('— nested button scripts compile correctly —');
   const after = makeEventOfType('SET_VAR');
   after.varId = proj.variables[0].id; after.value = 5;
   // The attach sits in the middle of a script; its body must not be spliced in.
-  proj.scenes[0].actors[0].script = [attach, after];
+  proj.scenes[0].actors[0].scripts.interact = [attach, after];
   const c = compileProject(proj);
   const ascending = c.scriptOffsets.every((o, i, arr) => i === 0 || o >= arr[i - 1]);
   assert(ascending, `script offsets stay ordered (${c.scriptOffsets.join(',')})`);
@@ -571,6 +574,317 @@ console.log('— nested button scripts compile correctly —');
   assert(!e.text, 'the attached body did not run inline');
   press(e, BTN.B);
   assert(e.text && e.text.str.includes('button'), 'the attached body runs on its own when B is pressed');
+}
+
+console.log('— script lifecycle slots —');
+{
+  // Every actor's On Init runs before the scene's own On Init.
+  const proj = makeDemoProject();
+  const v0 = proj.variables[0].id, v1 = proj.variables[1].id;
+  proj.scenes[0].actors[0].scripts.init = [
+    Object.assign(makeEventOfType('SET_VAR'), { varId: v0, value: 1 }),
+  ];
+  proj.scenes[0].scripts.init = [
+    // Only sets v1 if the actor already ran: 1 -> 7, otherwise untouched.
+    Object.assign(makeEventOfType('IF_VAR'), {
+      varId: v0, cmp: '==', value: 1,
+      then: [Object.assign(makeEventOfType('SET_VAR'), { varId: v1, value: 7 })],
+      else: [],
+    }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  for (let i = 0; i < 10; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 1, 'actor On Init ran on scene load');
+  assert(e.vars[1] === 7, 'scene On Init ran after the actor On Init');
+}
+
+{
+  // Two blocking inits queue rather than clobbering each other.
+  const proj = makeDemoProject();
+  const sc = proj.scenes[0];
+  sc.actors[0].scripts.init = [Object.assign(makeEventOfType('TEXT'), { text: 'first' })];
+  sc.scripts.init = [Object.assign(makeEventOfType('TEXT'), { text: 'second' })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  e.setButtons(0); e.step();
+  assert(e.text && e.text.str.includes('first'), 'the first queued init opened its dialogue');
+  // Let the typewriter finish, then close the page with A.
+  for (let i = 0; i < 200; i++) { e.setButtons(0); e.step(); }
+  press(e, BTN.A);
+  for (let i = 0; i < 3; i++) { e.setButtons(0); e.step(); }
+  assert(e.text && e.text.str.includes('second'), 'the next init ran once the first finished');
+}
+
+{
+  // On Update runs every frame without blocking the player.
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  proj.scenes[0].scripts.init = []; // drop the demo intro so nothing else is running
+  proj.scenes[0].actors[0].scripts.update = [
+    Object.assign(makeEventOfType('ADD_VAR'), { varId: v, delta: 1 }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `an update script of plain events compiles clean (${c.warnings.join('; ')})`);
+  const e = new Emulator(c, { onTone: () => {} });
+  const before = e.vars[0];
+  for (let i = 0; i < 5; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === ((before + 5) & 0xff), `On Update ran once per frame (${before} -> ${e.vars[0]})`);
+  assert(!e.script.active, 'On Update never occupies the blocking VM');
+}
+
+{
+  // Blocking events are refused in an On Update slot rather than deadlocking.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.update = [
+    Object.assign(makeEventOfType('WAIT'), { frames: 30 }),
+    Object.assign(makeEventOfType('TEXT'), { text: 'nope' }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 2, `both blocking events warned (${c.warnings.length})`);
+  assert(c.warnings.every((w) => w.includes('On Update')), 'the warning names the On Update slot');
+  const e = new Emulator(c, { onTone: () => {} });
+  for (let i = 0; i < 20; i++) { e.setButtons(0); e.step(); }
+  assert(!e.text, 'the stripped dialogue never opened');
+}
+
+{
+  // Trigger On Leave fires on stepping back out.
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  const sc = proj.scenes[0];
+  const trig = sc.triggers[0];
+  trig.scripts.enter = [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 1 })];
+  trig.scripts.leave = [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 2 })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  // Stand on the trigger, then walk off it.
+  e.player.px = trig.x * 8; e.player.py = trig.y * 8;
+  e.player.tx = trig.x; e.player.ty = trig.y;
+  e.script.active = false; e.text = null; e.armedTrigger = -1;
+  for (let i = 0; i < 3; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 1, `On Enter ran when the player stepped in (${e.vars[0]})`);
+  e.script.active = false;
+  e.player.px = 0; e.player.py = 0; e.player.tx = 0; e.player.ty = 0;
+  for (let i = 0; i < 3; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 2, `On Leave ran when the player stepped out (${e.vars[0]})`);
+}
+
+console.log('— collision groups and On Hit —');
+{
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  const a = proj.scenes[0].actors[0];
+  a.collisionGroup = '1';
+  a.collideWith = 1; // Player
+  a.scripts.hit = [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 9 })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  // Walk the player right on top of the actor.
+  const act = e.actors[0];
+  e.player.px = act.px; e.player.py = act.py;
+  e.player.tx = act.tx; e.player.ty = act.ty;
+  e.script.active = false; e.text = null; e.armedHit = -1;
+  for (let i = 0; i < 3; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 9, `overlapping the player ran the actor's On Hit (${e.vars[0]})`);
+
+  // It must not re-fire while the two stay overlapped.
+  e.vars[0] = 0;
+  for (let i = 0; i < 5; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 0, 'On Hit does not re-fire while still touching');
+}
+
+{
+  // No On Hit of its own: the scene's On Player Hit picks it up.
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  proj.scenes[0].actors[0].collisionGroup = '2';
+  proj.scenes[0].actors[0].collideWith = 1;
+  proj.scenes[0].scripts.playerHit = [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 4 })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  const act = e.actors[0];
+  e.player.px = act.px; e.player.py = act.py;
+  e.script.active = false; e.text = null; e.armedHit = -1;
+  for (let i = 0; i < 3; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 4, `the scene On Player Hit caught the collision (${e.vars[0]})`);
+}
+
+{
+  // An actor with no group is not collidable at all.
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  proj.scenes[0].actors[0].collisionGroup = 'none';
+  proj.scenes[0].actors[0].scripts.hit = [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 3 })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  const act = e.actors[0];
+  e.player.px = act.px; e.player.py = act.py;
+  e.script.active = false; e.text = null;
+  for (let i = 0; i < 5; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] !== 3, 'an ungrouped actor never runs On Hit');
+}
+
+console.log('— Launch Projectile —');
+{
+  const proj = makeDemoProject();
+  const v = proj.variables[0].id;
+  const sc = proj.scenes[0];
+  // The demo's two actors live in different scenes, so add a target here.
+  const target = makeActorOfType('Target', proj.sprites[2].id, sc.actors[0].x + 3, sc.actors[0].y);
+  target.collisionGroup = '1';
+  target.scripts.hit = [Object.assign(makeEventOfType('SET_VAR'), { varId: v, value: 6 })];
+  sc.actors.push(target);
+  sc.actors[0].scripts.interact = [Object.assign(makeEventOfType('LAUNCH_PROJECTILE'), {
+    source: 'self', spriteId: proj.sprites[0].id, direction: 'right',
+    speed: 2, life: 200, collideWith: 2, // group 1
+  })];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `Launch Projectile compiles clean (${c.warnings.join('; ')})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0);
+  const live = e.projectiles.filter((p) => p.active);
+  assert(live.length === 1, `one projectile is in flight (${live.length})`);
+  assert(live[0].dx === 2 && live[0].dy === 0, `it flies right at 2px/frame (${live[0].dx},${live[0].dy})`);
+  const x0 = live[0].px;
+  e.setButtons(0); e.step();
+  assert(live[0].px === x0 + 2, 'it travels each frame');
+}
+
+{
+  // Lifetime expiry frees the slot again.
+  const proj = makeDemoProject();
+  proj.scenes[0].actors[0].scripts.interact = [Object.assign(makeEventOfType('LAUNCH_PROJECTILE'), {
+    source: 'self', spriteId: proj.sprites[0].id, direction: 'up',
+    speed: 1, life: 3, collideWith: 0,
+  })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.projectiles.some((p) => p.active), 'projectile spawned');
+  for (let i = 0; i < 5; i++) { e.setButtons(0); e.step(); }
+  assert(!e.projectiles.some((p) => p.active), 'projectile despawned when its lifetime ran out');
+}
+
+{
+  // The pool is finite and must not overflow.
+  const proj = makeDemoProject();
+  const shot = () => Object.assign(makeEventOfType('LAUNCH_PROJECTILE'), {
+    source: 'self', spriteId: proj.sprites[0].id, direction: 'down',
+    speed: 1, life: 250, collideWith: 0,
+  });
+  proj.scenes[0].actors[0].scripts.interact = Array.from({ length: 10 }, shot);
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.projectiles.filter((p) => p.active).length === 6,
+    `the pool caps at 6 in flight (${e.projectiles.filter((p) => p.active).length})`);
+}
+
+console.log('— actor direction, speed and effects —');
+{
+  const proj = makeDemoProject();
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('SET_ACTOR_DIR'), { target: 'self', direction: 'left' }),
+    Object.assign(makeEventOfType('SET_ACTOR_SPEED'), { target: 'self', speed: 3 }),
+    Object.assign(makeEventOfType('ACTOR_EFFECT'), { target: 'self', effect: 'shake', frames: 4 }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.actors[0].facing === 2, `facing set to left (${e.actors[0].facing})`);
+  assert(e.actors[0].speed === 3, `speed set to 3 (${e.actors[0].speed})`);
+  assert(e.actors[0].effect === 2, `shake effect active (${e.actors[0].effect})`);
+  // The effect counts itself down and clears.
+  for (let i = 0; i < 6; i++) { e.setButtons(0); e.step(); }
+  assert(e.actors[0].effect === 0, 'the effect cleared when its frames ran out');
+}
+
+{
+  // Half speed moves one pixel every other frame.
+  const proj = makeDemoProject();
+  const a = proj.scenes[0].actors[0];
+  a.speed = 0;
+  a.scripts.interact = [Object.assign(makeEventOfType('ACTOR_MOVE'), {
+    target: 'self', x: a.x + 4, y: a.y, instant: false,
+  })];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0, false);
+  const start = e.actors[0].px;
+  e.setButtons(0); e.step();
+  e.setButtons(0); e.step();
+  assert(e.actors[0].px - start === 1, `half speed covers 1px in 2 frames (${e.actors[0].px - start})`);
+}
+
+console.log('— scene stack and fades —');
+{
+  const proj = makeDemoProject();
+  const sc = proj.scenes[0];
+  const other = proj.scenes[1];
+  sc.actors[0].scripts.interact = [Object.assign(makeEventOfType('PUSH_SCENE'), {
+    sceneId: other.id, x: 1, y: 1, fade: 0,
+  })];
+  // Anything in the pushed scene can pop straight back.
+  other.scripts.init = [Object.assign(makeEventOfType('POP_SCENE'), { fade: 0 })];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `push/pop compiles clean (${c.warnings.join('; ')})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  // runActorScript stands the player below the actor — that is the tile the
+  // push must remember, so read it after positioning rather than before.
+  const act = e.actors[0];
+  const fromX = act.tx, fromY = act.ty + 1;
+  runActorScript(e, 0, false);
+  // Push, then the pushed scene's init pops right back.
+  for (let i = 0; i < 20; i++) { e.setButtons(0); e.step(); }
+  assert(e.sceneIdx === 0, `popped back to the original scene (${e.sceneIdx})`);
+  assert(Math.round(e.player.px / 8) === fromX && Math.round(e.player.py / 8) === fromY,
+    `the player is back where they pushed from (${e.player.px / 8},${e.player.py / 8})`);
+  assert(e.sceneStack.length === 0, 'the stack is empty again');
+}
+
+{
+  // Pop with nothing pushed is a no-op, not a crash.
+  const proj = makeDemoProject();
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('POP_SCENE'), { fade: 0 }),
+    Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 8 }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0);
+  assert(e.sceneIdx === 0, 'Pop Scene with an empty stack stays put');
+  assert(e.vars[0] === 8, 'and the script carries on past it');
+}
+
+{
+  // Fade Out blocks the script until the dither reaches full black.
+  const proj = makeDemoProject();
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('FADE_OUT'), { fade: 1 }),
+    Object.assign(makeEventOfType('SET_VAR'), { varId: proj.variables[0].id, value: 5 }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  runActorScript(e, 0, false);
+  e.setButtons(0); e.step();
+  assert(e.vars[0] !== 5, 'the script is still waiting on the fade');
+  for (let i = 0; i < 80; i++) { e.setButtons(0); e.step(); }
+  assert(e.fade.level === 16, `the screen faded all the way out (${e.fade.level})`);
+  assert(e.vars[0] === 5, 'the script resumed once the fade finished');
+}
+
+console.log('— project migration —');
+{
+  // A project saved before lifecycle slots existed must still load.
+  const proj = makeDemoProject();
+  const legacy = JSON.parse(JSON.stringify(proj));
+  for (const sc of legacy.scenes) {
+    sc.onEnter = sc.scripts.init; delete sc.scripts;
+    for (const a of sc.actors) { a.script = a.scripts.interact; delete a.scripts; }
+    for (const t of sc.triggers) { t.script = t.scripts.enter; delete t.scripts; }
+  }
+  const fixed = normalizeProject(legacy);
+  assert(Array.isArray(fixed.scenes[0].scripts.init), 'scene onEnter migrated to scripts.init');
+  assert(fixed.scenes[0].actors[0].scripts.interact.length > 0, 'actor script migrated to scripts.interact');
+  assert(fixed.scenes[0].triggers[0].scripts.enter.length > 0, 'trigger script migrated to scripts.enter');
+  assert(fixed.scenes[0].onEnter === undefined, 'the legacy scene field is gone');
+  assert(fixed.scenes[0].actors[0].script === undefined, 'the legacy actor field is gone');
+  // And it still compiles and plays.
+  const e = new Emulator(compileProject(fixed), { onTone: () => {} });
+  for (let i = 0; i < 30; i++) { e.setButtons(0); e.step(); }
+  assert(e.sceneIdx === 0, 'a migrated project boots and runs');
 }
 
 console.log('— bytecode sanity —');

@@ -18,12 +18,68 @@ script them with visual event blocks, play-test instantly in the browser, then e
       that <b>scroll</b> to follow the player. Paint the map, place <b>actors</b> (☺) and drag
       <b>trigger</b> areas (▦). Set the player start with ⚑.</li>
   <li><b>Script</b> — select an actor/trigger/scene and add event blocks in the right panel:
-      dialogue, variables, if/else branching, scene changes, moving actors, music, save games,
-      tones, tile swaps…</li>
+      dialogue, variables, if/else branching, scene changes, moving actors, projectiles, music,
+      save games, tones, tile swaps… Each entity has several script slots (see below).</li>
   <li><b>▶ Play</b> — instant play-test. The emulator runs the <i>same bytecode</i> your exported
       game uses, with the genuine Arduboy2 font.</li>
   <li><b>Export</b> — download the <code>.ino</code> sketch and flash it from the Arduino IDE.</li>
 </ol>
+
+<h2>Script lifecycle: when each script runs</h2>
+<p>Every actor, trigger and scene carries <i>several</i> scripts rather than one. Pick the
+slot in the inspector's tab strip; a ● marks a tab that already has events in it.</p>
+<table>
+  <tr><th>Where</th><th>Slot</th><th>Runs when</th></tr>
+  <tr><td rowspan="4">Actor</td><td><b>On Interact</b></td><td>the player faces it and presses A</td></tr>
+  <tr><td><b>On Init</b></td><td>the scene loads — before the scene's own On Init</td></tr>
+  <tr><td><b>On Hit</b></td><td>something it collides with touches it</td></tr>
+  <tr><td><b>On Update</b></td><td>every frame</td></tr>
+  <tr><td rowspan="2">Trigger</td><td><b>On Enter</b></td><td>the player steps into the area</td></tr>
+  <tr><td><b>On Leave</b></td><td>the player steps back out</td></tr>
+  <tr><td rowspan="2">Scene</td><td><b>On Init</b></td><td>the scene loads, after every actor's On Init</td></tr>
+  <tr><td><b>On Player Hit</b></td><td>the player touches a grouped actor that has no On Hit of its own</td></tr>
+</table>
+<p>Only one script runs at a time, so a script that pauses (dialogue, a menu, a wait) holds
+the others up; anything that fires meanwhile queues and runs as soon as the way is clear.</p>
+<p class="hint"><b>On Update is the exception</b> — it runs outside that queue, every frame,
+and must finish in that frame. Waits, dialogue, menus, fades and scene pushes are therefore
+not allowed in it; the exporter warns you and skips them. Use it for per-frame logic like
+watching a variable or firing a projectile on a timer.</p>
+
+<h2>Collisions</h2>
+<p>An actor with a <b>collision group</b> (1, 2 or 3) can be touched. Its <i>Runs On Hit for</i>
+list says what may set its <b>On Hit</b> script off — tick <b>Player</b> to react to the player
+walking into it, and a group to react to projectiles aimed at that group. An actor left in
+group <i>None</i> is not collidable at all.</p>
+<p>A hit re-arms only once the two separate, so standing on an actor fires its script once
+rather than every frame.</p>
+
+<h2>Projectiles</h2>
+<p><b>Launch Projectile</b> fires a sprite from an actor (or from the player) in one of eight
+directions, or in whatever direction the launcher is currently facing. Give it a speed in
+pixels per frame, a lifetime in frames, and the collision groups it should hit. It also dies
+on a solid tile. <b>Six</b> can be in flight at once; a seventh shot is dropped.</p>
+<p class="hint">Aim it with <b>Set Actor Direction</b>, which is also what the actor's
+<i>Facing</i> field in the inspector sets.</p>
+
+<h2>Actor movement and effects</h2>
+<ul>
+  <li><b>Set Actor Movement Speed</b> — pixels per frame, or ½ for one pixel every other
+      frame. Applies to patrol/wander and to scripted <b>Move Actor</b> walks.</li>
+  <li><b>Actor Effects</b> — <i>flicker</i> blinks the actor and <i>shake</i> jitters it one
+      pixel sideways, for a chosen number of frames. Both are draw-only: the actor keeps
+      moving and colliding normally.</li>
+</ul>
+
+<h2>The scene stack</h2>
+<p><b>Push Scene</b> remembers the current scene <i>and where the player is standing</i>, then
+loads another one. <b>Pop Scene</b> comes back to exactly that spot, and <b>Pop All Scenes</b>
+unwinds the lot. That is how you build a shop, a menu room or a cutscene without wiring a
+return trigger by hand. The stack is 8 deep, and popping with nothing pushed simply does
+nothing.</p>
+<p><b>Fade In</b> and <b>Fade Out</b> dither the screen over a few frames and pause the script
+until they finish; push and pop take the same <i>Fade speed</i>. Dialogue and menus are drawn
+on top of a fade, so text stays readable throughout.</p>
 
 <h2>How the game plays</h2>
 <table>
@@ -33,9 +89,13 @@ script them with visual event blocks, play-test instantly in the browser, then e
   <tr><td>Skip typewriter</td><td>B</td><td>X or Shift</td></tr>
 </table>
 <p>The player walks tile-by-tile (Bitsy-style) and is blocked by solid tiles and solid actors.
-Press <b>A</b> while facing an actor to run its script. Walking onto a trigger area runs its script
-(it re-arms after you step off it). A scene's <i>On enter</i> script runs every time the scene loads —
-use an <code>If Variable</code> block for one-time intros.</p>
+Press <b>A</b> while facing an actor to run its <i>On Interact</i> script. A scene's <i>On Init</i>
+script runs every time the scene loads — use an <code>If Variable</code> block for one-time intros.</p>
+
+<h2>Resizing the panels</h2>
+<p>Drag the thin bar on the inner edge of either side panel to make it wider or narrower —
+useful when a script gets deep or a scene list gets long. The width is remembered between
+sessions; double-click the bar to go back to the default.</p>
 
 <h2>Undo / redo</h2>
 <p>Every edit is undoable: <kbd>Ctrl</kbd>+<kbd>Z</kbd> to undo,
@@ -145,7 +205,7 @@ it would break.</p>
 <ul>
   <li>Variables are bytes (0–255). Use them as flags (0/1), counters, or states.</li>
   <li>Actor visibility resets when a scene loads. To keep an actor gone forever, set a variable when it
-      disappears and hide it again in the scene's <i>On enter</i> script (see the slime in the Key Quest demo).</li>
+      disappears and hide it again in the scene's <i>On Init</i> script (see the slime in the Key Quest demo).</li>
   <li><b>Set Tile</b> is great for opening doors and revealing passages — combine with the solid flag of tiles.</li>
   <li>Dialogue wraps automatically (~20 chars/line, 3 lines/page). Use <code>\\f</code> in the text for a manual page break.</li>
   <li><b>Change Scene</b> both switches the map and places the player — build doorways with a 1-tile trigger.</li>
@@ -199,6 +259,9 @@ save games use the AVR's built-in EEPROM.</p>
   <tr><td>Dialogue</td><td>256 unique strings (shared with menu labels)</td></tr>
   <tr><td>Menu options</td><td>8 per menu, ~9 characters per label</td></tr>
   <tr><td>Buttons</td><td>6 (◀ ▶ ▲ ▼ A B) — one attached script each</td></tr>
+  <tr><td>Projectiles</td><td>6 in flight at once</td></tr>
+  <tr><td>Scene stack</td><td>8 pushed scenes deep</td></tr>
+  <tr><td>Collision groups</td><td>3, plus the player</td></tr>
 </table>
 <p class="hint">The ATmega32u4 has ~28 KB of usable flash — roomy for dozens of scenes. The FX‑C's extra
 16 MB FX flash chip is not needed for ArduStudio games (that is where the 300-game library lives).</p>

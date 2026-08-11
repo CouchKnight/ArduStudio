@@ -11,6 +11,7 @@ import { initPlayTab } from './playTab.js';
 import { initExportTab } from './exportTab.js';
 import { initHelpTab } from './helpTab.js';
 import { initDesktop } from './desktop.js';
+import { initSidebars } from './sidebars.js';
 import { currentFileName, saveProject, openProject, isDesktop } from './fileio.js';
 
 const STORAGE_KEY = 'ardustudio.project.v1';
@@ -120,6 +121,9 @@ function loadInitialProject() {
 
 app.project = loadInitialProject();
 app.selectedSceneId = app.project.scenes[0] && app.project.scenes[0].id;
+
+// Before the panels render, so a restored width never flashes at its default.
+initSidebars();
 
 app.tabs.scenes = initSceneEditor(app);
 app.tabs.tiles = initTileEditor(app);

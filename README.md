@@ -48,7 +48,7 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 
 | Tab | What it does |
 |---|---|
-| **Scenes** | Paint tile maps — one Arduboy screen (Bitsy-style) or up to 4×4 screens that **scroll** to follow the player. Place actors, drag trigger areas, set the player start. Inspector edits the selected entity and its script. |
+| **Scenes** | Paint tile maps — one Arduboy screen (Bitsy-style) or up to 4×4 screens that **scroll** to follow the player. Place actors, drag trigger areas, set the player start. Inspector edits the selected entity, its collision settings and each of its lifecycle scripts. |
 | **Tiles** | 1-bit 8×8 pixel editor with solid/walkable flag, flip/shift/invert tools. |
 | **Sprites** | Animated sprites (up to 4 frames; 8×8, 16×8, 8×16, 16×16) with live preview. |
 | **Audio** | Compose songs and sound effects as ArduboyTones sequences. Note-name or raw-Hz entry, browser preview, retro presets, and import/export as `.song.json` or a `PROGMEM` C array. |
@@ -66,12 +66,27 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add Variable`,
 `Change Scene`, `Teleport Player`, `Set Tile` (open doors, reveal passages), `Hide / Show Actor`,
 `Move Actor` (walks and blocks the script until it arrives, or teleports),
-`Set Actor Sprite`, `Attach Script To Button` (with optional override of the default
-action), `Remove Button Script`, `Pause Script Until Input Pressed`,
-`If Joypad Input Held`, `Play Tone`,
+`Set Actor Sprite`, `Set Actor Direction`, `Set Actor Movement Speed`, `Actor Effects`
+(flicker / shake), `Launch Projectile`, `Attach Script To Button` (with optional override
+of the default action), `Remove Button Script`, `Pause Script Until Input Pressed`,
+`If Joypad Input Held`, `Push / Pop / Pop All Scenes`, `Fade In / Out`, `Play Tone`,
 `Play / Stop Song`, `Set RGB LED` (analog PWM or digital on/off), `Save Game`, `Load Game`,
-`Save Exists → Var`, `Delete Save`, `Wait`, `Stop Script`. Scripts attach to actors
-(on interact), triggers (on enter) and scenes (on enter).
+`Save Exists → Var`, `Delete Save`, `Wait`, `Stop Script`.
+
+### Script lifecycle
+
+Each entity carries several named scripts, picked from a tab strip in the inspector:
+
+| Entity | Slots |
+|---|---|
+| **Actor** | `On Interact` (A button) · `On Init` · `On Hit` (collision) · `On Update` (every frame) |
+| **Trigger** | `On Enter` · `On Leave` |
+| **Scene** | `On Init` · `On Player Hit` |
+
+Actors initialise before the scene does. Only one script occupies the VM at a time, so
+anything that fires while a script is blocked queues up behind it. `On Update` is the
+exception: it runs outside that queue every frame and must finish within it, so the
+compiler warns about — and skips — any event that would pause it.
 
 ### The game engine (on device and in the browser)
 
@@ -84,6 +99,9 @@ action), `Remove Button Script`, `Pause Script Until Input Pressed`,
 - Music and SFX via **ArduboyTones**, with looping background tracks.
 - Menus and yes/no prompts that write the player's answer into a variable.
 - Scripts attachable to any of the six buttons, optionally replacing the default action.
+- Collision groups, per-actor `On Hit` scripts, and a pool of 6 eight-directional projectiles.
+- Per-actor facing and movement speed; flicker and shake effects.
+- A scene stack — push a scene and pop back to the exact tile you left, with dithered fades.
 - RGB LED feedback, analog (PWM brightness) or digital (on/off).
 - Save games in EEPROM — variables, current scene and player position, surviving power-off.
 
@@ -116,6 +134,7 @@ js/emulator.js            browser play-test runtime (Arduboy twin)
 js/codegen.js             .ino generator (data + C++ engine)
 js/font5x7.js             Arduboy2's font, extracted for pixel-identical text
 js/*.js                   editor panels (scene, pixel, script, audio, variables, image, play, export)
+js/sidebars.js            draggable, persisted side-panel widths
 desktop/main.cjs          Electron main process (window, menu, native dialogs)
 desktop/preload.cjs       contextBridge exposing a minimal native API
 js/desktop.js             renderer side of the desktop bridge (no-op in a browser)
@@ -128,14 +147,15 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 102 assertions: playthrough, camera, saves, songs, menus, LED, input
+node tools/test_runtime.mjs     # 145 assertions: playthrough, camera, saves, songs, menus, LED,
+                                #   input, lifecycle slots, collisions, projectiles, scene stack
 node tools/check_codegen.mjs    # generated sketches pass g++ -Wall -Wextra
 tools/build_avr.sh              # optional: full ATmega32u4 build (needs gcc-avr, avr-libc)
 ```
 
 The AVR build compiles the generated sketch against the unmodified Arduboy2 and ArduboyTones
-libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 20,332 bytes
-flash / 1,713 bytes RAM.
+libraries and the Arduino AVR core, linking a flashable `game.hex` — verified at 23,242 bytes
+flash / 1,968 bytes RAM, against the ATmega32u4's ~28 KB usable flash and 2,560 bytes of RAM.
 
 ## Offline / desktop builds
 
@@ -166,6 +186,9 @@ Notes on the packaged apps:
 
 ## Editing
 
+Both side panels resize by dragging the bar on their inner edge; the width is kept in
+localStorage, and double-clicking the bar restores the default.
+
 Undo/redo covers every edit — <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> (or the
 ↶ ↷ buttons), 100 steps deep, with a drag-paint stroke counting as one step. Projects autosave to
 localStorage and can be saved to / loaded from JSON files.
@@ -174,7 +197,8 @@ localStorage and can be saved to / loaded from JSON files.
 
 64 tiles · 32 sprites × 4 frames · 8 actors + 8 triggers per scene · 32 variables ·
 32 songs × 192 notes · 256 dialogue strings · 8 options per menu (~9 chars each) ·
-6 buttons with one attached script each ·
+6 buttons with one attached script each · 6 projectiles in flight ·
+8-deep scene stack · 3 collision groups plus the player ·
 scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene.
 
 Roadmap ideas: ArduboyFX data export for asset-heavy games, multiple save slots, `.arduboy` package
