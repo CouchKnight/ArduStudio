@@ -139,6 +139,44 @@ export const NO_SCRIPT = 0xffff;
 export const TEXT_CHARS_PER_LINE = 20;
 export const TEXT_LINES_PER_PAGE = 3;
 
+// A "$name" in text prints that variable's value. Values are only known while
+// the game runs, so the compiler leaves a two-byte marker in the string and the
+// runtimes expand it: 0x01 followed by the variable index plus one, which keeps
+// the second byte clear of NUL and out of the printable range.
+export const TEXT_VAR_MARKER = '\u0001';
+// A byte value is 0-255, so it renders as at most three characters. Wrapping
+// reserves that width, which means a line can only ever come out shorter than
+// planned — never wider than the dialogue box.
+export const TEXT_VAR_MAX_WIDTH = 3;
+
+export function textVarMarker(varIndex) {
+  return TEXT_VAR_MARKER + String.fromCharCode(varIndex + 1);
+}
+
+// Columns a stored string occupies once drawn, counting each marker as its
+// widest possible value.
+export function displayWidth(str) {
+  let n = 0;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === TEXT_VAR_MARKER) { n += TEXT_VAR_MAX_WIDTH; i++; }
+    else n++;
+  }
+  return n;
+}
+
+// Split a stored string after `cols` display columns without ever cutting a
+// marker in half. Returns [head, tail].
+function splitAtWidth(str, cols) {
+  let n = 0, i = 0;
+  while (i < str.length) {
+    const w = str[i] === TEXT_VAR_MARKER ? TEXT_VAR_MAX_WIDTH : 1;
+    if (n + w > cols) break;
+    n += w;
+    i += str[i] === TEXT_VAR_MARKER ? 2 : 1;
+  }
+  return [str.slice(0, i), str.slice(i)];
+}
+
 // Wrap dialogue text into pages of up to 3 lines of 20 chars.
 // '\n' forces a line break, '\f' forces a page break. Output uses the same
 // two control characters, so runtimes only ever handle '\n' and '\f'.
@@ -151,17 +189,21 @@ export function wrapText(text) {
       const words = para.split(/ +/).filter((w) => w.length);
       if (!words.length) { lines.push(''); continue; }
       let line = '';
+      let lineWidth = 0;
       for (let word of words) {
-        while (word.length > TEXT_CHARS_PER_LINE) {
-          if (line) { lines.push(line); line = ''; }
-          lines.push(word.slice(0, TEXT_CHARS_PER_LINE));
-          word = word.slice(TEXT_CHARS_PER_LINE);
+        while (displayWidth(word) > TEXT_CHARS_PER_LINE) {
+          if (lineWidth) { lines.push(line); line = ''; lineWidth = 0; }
+          const [head, tail] = splitAtWidth(word, TEXT_CHARS_PER_LINE);
+          // A marker is only 3 columns wide, so head can never come back empty.
+          lines.push(head);
+          word = tail;
         }
-        if (!line.length) line = word;
-        else if (line.length + 1 + word.length <= TEXT_CHARS_PER_LINE) line += ' ' + word;
-        else { lines.push(line); line = word; }
+        const wordWidth = displayWidth(word);
+        if (!lineWidth) { line = word; lineWidth = wordWidth; }
+        else if (lineWidth + 1 + wordWidth <= TEXT_CHARS_PER_LINE) { line += ' ' + word; lineWidth += 1 + wordWidth; }
+        else { lines.push(line); line = word; lineWidth = wordWidth; }
       }
-      if (line.length) lines.push(line);
+      if (lineWidth) lines.push(line);
     }
     for (let i = 0; i < lines.length; i += TEXT_LINES_PER_PAGE) {
       pagesOut.push(lines.slice(i, i + TEXT_LINES_PER_PAGE).join('\n'));
@@ -179,8 +221,7 @@ export function compileProject(project) {
   const stringIndex = new Map();
   // Store a string exactly as given, sharing the dialogue string table so
   // labels and dialogue dedupe against each other.
-  const internRaw = (text) => {
-    const s = String(text);
+  const internPlain = (s) => {
     if (stringIndex.has(s)) return stringIndex.get(s);
     const idx = strings.length;
     if (idx > 255) throw new Error('Too many unique dialogue strings (max 256)');
@@ -188,8 +229,54 @@ export function compileProject(project) {
     stringIndex.set(s, idx);
     return idx;
   };
+
+  // Replace every "$name" with the marker the runtimes expand into that
+  // variable's value.
+  //   $name    a reference, ending at the first character that is not a letter,
+  //            digit or underscore
+  //   ${name}  the same, with the end spelled out — which is what you need when
+  //            a value butts straight up against more text
+  //   $$       a literal dollar sign
+  // An unknown name is left exactly as typed and warned about: a typo should
+  // leave the sentence readable rather than blanking part of it.
+  let usesTextVars = false;
+  function substituteVars(text, ctx) {
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] !== '$') { out += text[i]; continue; }
+      if (text[i + 1] === '$') { out += '$'; i++; continue; }
+
+      let name = null;
+      let consumed = 0;
+      if (text[i + 1] === '{') {
+        const close = text.indexOf('}', i + 2);
+        if (close > 0) {
+          name = text.slice(i + 2, close);
+          consumed = close - i;
+          if (!/^[A-Za-z0-9_]+$/.test(name)) name = null;
+        }
+      } else {
+        const m = /^[A-Za-z0-9_]+/.exec(text.slice(i + 1));
+        if (m) { name = m[0]; consumed = m[0].length; }
+      }
+      if (name === null) { out += '$'; continue; }
+
+      const idx = exprVarIndex.get(name);
+      if (idx === undefined) {
+        warnings.push(`${ctx}: text mentions $${name}, which is not a variable — printed as written`);
+        out += text.slice(i, i + consumed + 1);
+      } else {
+        usesTextVars = true;
+        out += textVarMarker(idx);
+      }
+      i += consumed;
+    }
+    return out;
+  }
+
+  const internRaw = (text, ctx) => internPlain(substituteVars(String(text), ctx));
   // Dialogue goes through word wrapping first; menu labels must not.
-  const internString = (raw) => internRaw(wrapText(raw));
+  const internString = (raw, ctx) => internPlain(wrapText(substituteVars(String(raw), ctx)));
 
   const varIndex = new Map();
   const exprVarIndex = new Map(); // by name, for $name in expressions
@@ -270,7 +357,7 @@ export function compileProject(project) {
       }
       switch (ev.type) {
         case 'TEXT':
-          emit(OP.TEXT, internString(ev.text || ''));
+          emit(OP.TEXT, internString(ev.text || '', ctx));
           break;
         case 'SWITCH_SCENE': {
           const idx = sceneIndex.get(ev.sceneId);
@@ -380,10 +467,10 @@ export function compileProject(project) {
           if (ev.layout === 'dialogue') flags |= MENU_LAYOUT_DIALOGUE;
           emit(OP.MENU, idx, opts.length, flags);
           for (const label of opts) {
-            if (String(label).length > MENU_LABEL_MAX_CHARS) {
+            if (displayWidth(substituteVars(String(label), ctx)) > MENU_LABEL_MAX_CHARS) {
               warnings.push(`${ctx}: menu option "${label}" is wider than ${MENU_LABEL_MAX_CHARS} characters and will be clipped on screen`);
             }
-            emit(internRaw(label));
+            emit(internRaw(label, ctx));
           }
           break;
         }
@@ -436,13 +523,13 @@ export function compileProject(project) {
           const idx = varIndex.get(ev.varId);
           if (idx === undefined) { warnings.push(`${ctx}: Display Multiple Choice has no variable selected — skipped`); break; }
           for (const label of [ev.trueLabel, ev.falseLabel]) {
-            if (String(label).length > MENU_LABEL_MAX_CHARS) {
+            if (displayWidth(substituteVars(String(label), ctx)) > MENU_LABEL_MAX_CHARS) {
               warnings.push(`${ctx}: choice option "${label}" is wider than ${MENU_LABEL_MAX_CHARS} characters and will be clipped on screen`);
             }
           }
           emit(OP.MENU, idx, 2, MENU_LAST_IS_ZERO | MENU_LAYOUT_DIALOGUE);
-          emit(internRaw(ev.trueLabel));
-          emit(internRaw(ev.falseLabel));
+          emit(internRaw(ev.trueLabel, ctx));
+          emit(internRaw(ev.falseLabel, ctx));
           break;
         }
         case 'SET_ACTOR_DIR': {
@@ -665,7 +752,7 @@ export function compileProject(project) {
           if (!text) { warnings.push(`${ctx}: Draw Text has no text — skipped`); break; }
           // Drawn text is positioned by hand, so it must not be word-wrapped
           // the way dialogue is; it shares the string table all the same.
-          emit(OP.DRAW_TEXT, internRaw(text),
+          emit(OP.DRAW_TEXT, internRaw(text, ctx),
             clampByte(ev.x, 0, 255), clampByte(ev.y, 0, 255),
             ev.location === 'overlay' ? DRAW_TEXT_OVERLAY : DRAW_TEXT_BACKGROUND);
           break;
@@ -806,6 +893,7 @@ export function compileProject(project) {
     SCENE_STACK: uses(OP.PUSH_SCENE, OP.POP_SCENE, OP.POP_ALL_SCENES),
     FADE: uses(OP.FADE_IN, OP.FADE_OUT, OP.PUSH_SCENE, OP.POP_SCENE, OP.POP_ALL_SCENES),
     LED: uses(OP.SET_LED),
+    TEXT_VARS: usesTextVars,
     EFFECTS: uses(OP.ACTOR_EFFECT),
     // Projectiles imply collisions; collisions also come from any On Hit script.
     PROJECTILES: uses(OP.LAUNCH_PROJECTILE),
