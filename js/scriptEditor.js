@@ -103,6 +103,74 @@ function labelFor(ev) {
 // happens on nearly every edit) does not spring them all open again.
 const collapsed = new Set();
 
+// Typing "$" in a field that becomes on-screen text offers the project's
+// variables, so you can search for one instead of remembering its exact name.
+// Whatever you pick prints its value where the reference sits.
+function attachVariableAutocomplete(field, app, onPick) {
+  let menu = null;
+  let matches = [];
+  let sel = 0;
+
+  const close = () => { if (menu) { menu.remove(); menu = null; } };
+
+  // The "$partial" being typed, if the caret sits at the end of one.
+  const token = () => {
+    const upto = field.value.slice(0, field.selectionStart);
+    const m = /\$([A-Za-z0-9_]*)$/.exec(upto);
+    // "$$" is an escaped dollar sign, not the start of a reference.
+    if (!m || /\$\$$/.test(upto)) return null;
+    return { start: field.selectionStart - m[0].length, partial: m[1] };
+  };
+
+  const insert = (name) => {
+    const t = token();
+    if (!t) return;
+    const before = field.value.slice(0, t.start);
+    const after = field.value.slice(field.selectionStart);
+    // A reference that butts straight up against a letter or digit needs the
+    // braced form, or the name would swallow whatever follows it.
+    const ref = /^[A-Za-z0-9_]/.test(after) ? `\${${name}}` : `$${name}`;
+    field.value = before + ref + after;
+    const caret = before.length + ref.length;
+    field.setSelectionRange(caret, caret);
+    close();
+    onPick(field.value);
+    field.focus();
+  };
+
+  const render = () => {
+    const t = token();
+    if (!t) { close(); return; }
+    const needle = t.partial.toLowerCase();
+    matches = app.project.variables.filter((v) => v.name.toLowerCase().includes(needle));
+    if (!matches.length) { close(); return; }
+    if (sel >= matches.length) sel = 0;
+    if (!menu) {
+      menu = el('div', { class: 'var-complete' });
+      field.parentNode.append(menu);
+    }
+    clear(menu);
+    matches.forEach((v, i) => {
+      menu.append(el('div', {
+        class: 'var-complete-row' + (i === sel ? ' active' : ''),
+        // mousedown, not click: the field must not lose focus first, or the
+        // caret position the insert depends on is gone.
+        onmousedown: (e) => { e.preventDefault(); insert(v.name); },
+      }, `$${v.name}`));
+    });
+  };
+
+  field.addEventListener('input', () => { sel = 0; render(); });
+  field.addEventListener('blur', () => setTimeout(close, 120));
+  field.addEventListener('keydown', (e) => {
+    if (!menu) return;
+    if (e.key === 'ArrowDown') { sel = (sel + 1) % matches.length; e.preventDefault(); render(); }
+    else if (e.key === 'ArrowUp') { sel = (sel + matches.length - 1) % matches.length; e.preventDefault(); render(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insert(matches[sel].name); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+}
+
 // Why an expression will not compile, or null when it is fine. The editor uses
 // the very same compiler the exporter does, so the two can never disagree.
 function expressionProblem(src, project) {
@@ -234,8 +302,10 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
     case 'TEXT': {
       const ta = el('textarea', { rows: 2, spellcheck: false, value: ev.text });
       ta.addEventListener('input', () => { ev.text = ta.value; changed(); });
-      fields.append(el('label', { style: 'flex:1 1 100%' }, ta));
-      fields.append(el('span', { class: 'hint' }, 'Line break: new line · New page: \\f · ~20 chars/line, 3 lines/page'));
+      attachVariableAutocomplete(ta, app, (value) => { ev.text = value; changed(); });
+      fields.append(el('label', { style: 'flex:1 1 100%; position:relative' }, ta));
+      fields.append(el('span', { class: 'hint' },
+        'Line break: new line · New page: \\f · ~20 chars/line, 3 lines/page · $name shows a variable'));
       break;
     }
     case 'SWITCH_SCENE': {
@@ -452,13 +522,13 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
 
       ev.options.forEach((label, i) => {
         const isLastZero = ev.lastIsZero && i === ev.options.length - 1;
-        fields.append(el('label', { style: 'flex-basis:100%' },
-          `Set to '${isLastZero ? 0 : i + 1}' if`,
-          el('input', {
-            type: 'text', value: label,
-            onchange: (e) => { ev.options[i] = e.target.value; changed(); rerender(); },
-          }),
-        ));
+        const input = el('input', {
+          type: 'text', value: label,
+          onchange: (e) => { ev.options[i] = e.target.value; changed(); },
+        });
+        attachVariableAutocomplete(input, app, (value) => { ev.options[i] = value; changed(); });
+        fields.append(el('label', { style: 'flex-basis:100%; position:relative' },
+          `Set to '${isLastZero ? 0 : i + 1}' if`, input));
       });
 
       fields.append(el('label', { style: 'flex-basis:100%' }, el('input', {
@@ -475,14 +545,14 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
     }
     case 'CHOICE': {
       fields.append(el('label', {}, 'Variable', varSelect('varId')));
-      fields.append(el('label', { style: 'flex-basis:100%' }, "Set to 'True' if", el('input', {
-        type: 'text', value: ev.trueLabel,
-        onchange: (e) => { ev.trueLabel = e.target.value; changed(); },
-      })));
-      fields.append(el('label', { style: 'flex-basis:100%' }, "Set to 'False' if", el('input', {
-        type: 'text', value: ev.falseLabel,
-        onchange: (e) => { ev.falseLabel = e.target.value; changed(); },
-      })));
+      for (const [key, caption] of [['trueLabel', "Set to 'True' if"], ['falseLabel', "Set to 'False' if"]]) {
+        const input = el('input', {
+          type: 'text', value: ev[key],
+          onchange: (e) => { ev[key] = e.target.value; changed(); },
+        });
+        attachVariableAutocomplete(input, app, (value) => { ev[key] = value; changed(); });
+        fields.append(el('label', { style: 'flex-basis:100%; position:relative' }, caption, input));
+      }
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
         "True sets the variable to 1, False to 0 — test it with an If Variable block."));
       break;
@@ -729,7 +799,8 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
     case 'DRAW_TEXT': {
       const ta = el('textarea', { rows: 2, spellcheck: false, value: ev.text, placeholder: 'Text…' });
       ta.addEventListener('input', () => { ev.text = ta.value; changed(); });
-      fields.append(el('label', { style: 'flex:1 1 100%' }, ta));
+      attachVariableAutocomplete(ta, app, (value) => { ev.text = value; changed(); });
+      fields.append(el('label', { style: 'flex:1 1 100%; position:relative' }, ta));
       fields.append(el('label', {}, 'X', numInput('x', 0, 127)));
       fields.append(el('label', {}, 'Y', numInput('y', 0, 63)));
       fields.append(el('label', {}, 'Location', keySelect('location', [

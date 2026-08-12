@@ -217,6 +217,29 @@ canvas { image-rendering: pixelated; }
 .preview-box { background: var(--screen-off); border: 1px solid var(--border); border-radius: 4px; padding: 8px; width: fit-content; }
 /* The animation state the sprite preview is playing. */
 .form-row.state-active { background: #14405c; border-radius: 5px; padding: 2px 4px; }
+/* The "$" variable picker that drops out of a text field. */
+.var-complete {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  min-width: 140px;
+  max-height: 160px;
+  overflow-y: auto;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.var-complete-row {
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.var-complete-row:hover, .var-complete-row.active { background: #14405c; }
+
 /* An expression the compiler cannot parse. */
 input.bad { border-color: var(--danger); }
 .warn-text { color: var(--warn); }
