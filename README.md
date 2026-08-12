@@ -52,7 +52,7 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 | **Tiles** | 1-bit 8×8 pixel editor with solid/walkable flag, flip/shift/invert tools. |
 | **Sprites** | Animated sprites (up to 4 frames; 8×8, 16×8, 8×16, 16×16) with live preview, and named animation states — frame ranges like Idle or Walk that scripts can select. |
 | **Audio** | Compose songs and sound effects as ArduboyTones sequences. Note-name or raw-Hz entry, browser preview, retro presets, and import/export as `.song.json` or a `PROGMEM` C array. |
-| **Variables** | Central manager for all 32 byte variables, with live usage tracking showing every script that reads or writes each one. |
+| **Variables** | Central manager for all 32 byte variables, with live usage tracking showing every script that reads, writes or prints each one. Renaming carries `$name` references in text and expressions along with it. |
 | **Image Tool** | PNG → 1-bit converter (threshold + invert). Import as tiles or a sprite, or copy a `PROGMEM` C array in the standard Arduboy vertical-byte format. |
 | **▶ Play** | Full play-test emulator at 60 fps with sound and a live variable watch. Runs the *same bytecode* as the exported game and renders text with the genuine Arduboy2 `font5x7`. |
 | **Export** | One click → complete `.ino` sketch. Also project save/load as JSON (plus localStorage autosave). |
@@ -106,6 +106,8 @@ compiler warns about — and skips — any event that would pause it.
 - Scripts attachable to any of the six buttons, optionally replacing the default action.
 - Collision groups, per-actor `On Hit` scripts, and a pool of 6 eight-directional projectiles.
 - Actor queries — position, straight-line distance and facing — that branch or write to variables.
+- `$name` in any on-screen text prints that variable's value, read as it is drawn — so a
+  `Draw Text` score keeps itself up to date. Type `$` in a text field to search your variables.
 - Integer math expressions (`6 * $health`), compiled to RPN at build time and run on a tiny
   stack machine, so the device never parses anything.
 - Named sprite animation states, with per-actor animation frame, speed and loop control.
@@ -158,10 +160,11 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 241 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 279 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
-                                #   actor queries, expressions, switch, animation states, overlay
-node tools/check_codegen.mjs    # demo, blank and an all-features project all pass g++
+                                #   actor queries, expressions, switch, animation states, overlay,
+                                #   variable values in text
+node tools/check_codegen.mjs    # demo, blank and an all-features project compile AND link
 tools/build_avr.sh              # optional: full ATmega32u4 build (needs gcc-avr, avr-libc)
 PROJECT=all-features tools/build_avr.sh   # the worst case: a game using every subsystem
 ```
@@ -177,8 +180,8 @@ usable flash and 2,560 bytes of RAM:
 
 | Project | Flash | RAM |
 |---|---|---|
-| Key Quest demo | 22,920 | 1,940 |
-| Every subsystem at once | 26,358 | 2,038 |
+| Key Quest demo | 22,960 | 1,940 |
+| Every subsystem at once | 26,512 | 2,038 |
 
 The optional subsystems come to about 3.4 KB of flash in total, so a game reaching for all of
 them has roughly 2.3 KB left for its own scenes and art.

@@ -279,6 +279,26 @@ an actor in the scene.</p>
 <p class="hint">These are what a chase turns into: an <b>On Update</b> script that tests
 <i>If Actor Distance From Actor</i> against the player and moves the actor when it is close.</p>
 
+<h2>Showing a variable's value in text</h2>
+<p>Any event that puts words on screen — <b>Show Dialogue</b>, <b>Draw Text</b>, and the
+labels of <b>Display Menu</b> and <b>Display Multiple Choice</b> — can print a variable's
+value. Type <code>$</code> and the editor drops down a list of your variables to search;
+pick one and it writes the reference for you.</p>
+<table>
+  <tr><td><code>$name</code></td><td>prints that variable's value</td></tr>
+  <tr><td><code>${name}</code></td><td>the same, when the value is followed straight away by
+      more letters — <code>$goldcoins</code> would read as a variable called
+      <i>goldcoins</i>, so write <code>${gold}coins</code></td></tr>
+  <tr><td><code>$$</code></td><td>a literal dollar sign</td></tr>
+</table>
+<p>The value is read at the moment it is drawn, not when the script starts, so text that
+stays on screen keeps itself up to date — a <b>Draw Text</b> score counter needs no repainting
+logic at all. A name that matches no variable is printed exactly as you typed it, and the
+exporter warns you about it.</p>
+<p class="hint">Line wrapping has to reserve room before it knows the value, so it counts every
+reference as <b>three characters</b> — the widest a 0–255 variable can print. A short value
+just leaves a little space; a line can never overrun the box.</p>
+
 <h2>Keeping scripts readable</h2>
 <ul>
   <li><b>Comment</b> — notes to yourself. It does nothing in the game and costs no space on
@@ -360,6 +380,7 @@ save games use the AVR's built-in EEPROM.</p>
   <tr><td>Animation states</td><td>4 per sprite</td></tr>
   <tr><td>Switch options</td><td>8, plus Else</td></tr>
   <tr><td>Drawn text</td><td>4 pieces on screen at once</td></tr>
+  <tr><td>Value in text</td><td>reserves 3 characters when wrapping</td></tr>
 </table>
 <p class="hint">Your game only carries the engine features it actually uses: a game with no
 overlay has no overlay code in its sketch, and the same goes for projectiles, expressions,
