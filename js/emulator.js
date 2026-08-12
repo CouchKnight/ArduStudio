@@ -14,7 +14,7 @@ import {
   ATTACH_OVERRIDE, NUM_BUTTONS,
   PROJECTILE_SRC_SELF, PROJECTILE_SRC_PLAYER,
   ACTOR_REF_SELF, ACTOR_REF_PLAYER,
-  MAX_DRAWN_TEXT, DRAW_TEXT_OVERLAY, DRAW_TEXT_BACKGROUND,
+  MAX_DRAWN_TEXT, DRAW_TEXT_OVERLAY, DRAW_TEXT_BACKGROUND, TEXT_VAR_MARKER,
 } from './compiler.js';
 import { evalExpression } from './expression.js';
 import { FONT5X7 } from './font5x7.js';
@@ -49,6 +49,24 @@ const FACING_TO_PROJ_DIR = [];
 for (const d of DIRECTIONS) {
   const match = PROJECTILE_DIRS.find((p) => p.dx === d.dx && p.dy === d.dy);
   FACING_TO_PROJ_DIR[d.code] = match ? match.code : 0;
+}
+
+// Turn a stored string into what the player actually reads, replacing each
+// "$name" marker the compiler left behind with that variable's value right now.
+// The C++ engine walks the same bytes without building a string, since RAM is
+// far scarcer there.
+function expandText(src, vars) {
+  if (!src.includes(TEXT_VAR_MARKER)) return src; // the overwhelmingly common case
+  let out = '';
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] === TEXT_VAR_MARKER) {
+      out += String(vars[src.charCodeAt(i + 1) - 1]);
+      i++;
+    } else {
+      out += src[i];
+    }
+  }
+  return out;
 }
 
 // Comparison operators, in the order the CMP table in the compiler assigns.
@@ -1076,12 +1094,18 @@ export class Emulator {
     }
   }
 
+  // The current page as the player will read it, values already filled in.
+  pageText(t) {
+    return expandText(t.str.slice(t.pageStart, this.pageEnd(t)), this.vars);
+  }
+
   updateText() {
     const t = this.text;
     const pageEnd = this.pageEnd(t);
-    if (t.shown < pageEnd - t.pageStart) {
-      t.shown = Math.min(pageEnd - t.pageStart, t.shown + TEXT_CHARS_PER_FRAME);
-      if (this.justPressed(BTN.A) || this.justPressed(BTN.B)) t.shown = pageEnd - t.pageStart; // skip typewriter
+    const pageLen = this.pageText(t).length;
+    if (t.shown < pageLen) {
+      t.shown = Math.min(pageLen, t.shown + TEXT_CHARS_PER_FRAME);
+      if (this.justPressed(BTN.A) || this.justPressed(BTN.B)) t.shown = pageLen; // skip typewriter
       return;
     }
     if (this.justPressed(BTN.A)) {
@@ -1212,13 +1236,18 @@ export class Emulator {
     }
   }
 
-  drawText(x, y, str) {
+  // Draw characters exactly as given, with no marker expansion.
+  drawChars(x, y, str) {
     let cx = x, cy = y;
     for (const ch of str) {
       if (ch === '\n') { cx = x; cy += 8; continue; }
       this.drawChar(cx, cy, ch);
       cx += 6;
     }
+  }
+
+  drawText(x, y, str) {
+    this.drawChars(x, y, expandText(str, this.vars));
   }
 
   draw() {
@@ -1327,9 +1356,10 @@ export class Emulator {
     this.fillRect(0, 38, W, 26, 0);
     this.drawRectOutline(0, 38, W, 26, 1);
     const pageEnd = this.pageEnd(t);
-    const visible = t.str.slice(t.pageStart, t.pageStart + t.shown);
-    this.drawText(4, 40, visible);
-    if (t.shown >= pageEnd - t.pageStart && (this.frame >> 4) & 1) {
+    const page = this.pageText(t);
+    // Already expanded, so draw it directly — drawText would expand twice.
+    this.drawChars(4, 40, page.slice(0, t.shown));
+    if (t.shown >= page.length && (this.frame >> 4) & 1) {
       // blinking "more" arrow
       this.px(122, 59, 1); this.px(123, 59, 1); this.px(124, 59, 1);
       this.px(123, 60, 1);

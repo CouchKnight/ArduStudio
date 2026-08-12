@@ -35,7 +35,9 @@ export function makeAllFeaturesProject() {
     ev('LAUNCH_PROJECTILE', { source: 'self', spriteId, direction: 'right', speed: 2, life: 60, collideWith: 2 }),
     ev('ACTOR_EFFECT', { target: 'self', effect: 'flicker', frames: 10 }),
     ev('SHOW_OVERLAY', { fill: 'black', x: 0, y: 4 }),
-    ev('DRAW_TEXT', { text: 'SCORE', x: 4, y: 36, location: 'overlay' }),
+    // A "$name" prints the variable's value, so the generated sketch is checked
+    // with the expansion markers actually present.
+    ev('DRAW_TEXT', { text: `SCORE $${v.name}`, x: 4, y: 36, location: 'overlay' }),
     ev('DRAW_TEXT', { text: 'MAP', x: 8, y: 8, location: 'background' }),
     ev('OVERLAY_MOVE', { x: 0, y: 2, speed: 2 }),
     ev('OVERLAY_CUTOFF', { y: 32 }),

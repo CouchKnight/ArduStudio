@@ -73,6 +73,7 @@ function escapeCString(s) {
     else if (ch === '\n') out += '\\n';
     else if (ch === '\f') out += '\\f';
     else if (c >= 32 && c < 127) out += ch;
+    else if (c > 0 && c < 32) out += '\\' + c.toString(8).padStart(3, '0');
     else out += '?';
   }
   return out;
@@ -523,6 +524,7 @@ void queueScript(uint16_t scriptIdx, uint8_t selfActor);
 void startFade(uint8_t target, uint8_t speed);
 int16_t moveToward(int16_t cur, int16_t goal, int16_t speed);
 uint8_t spriteLastFrame(uint8_t idx);
+uint16_t walkText(int16_t x, int16_t y, const char* str, uint16_t from, uint16_t limit, bool draw);
 
 void startScript(uint16_t scriptIdx, uint8_t selfActor) {
   if (scriptIdx == NO_SCRIPT) return;
@@ -757,15 +759,60 @@ void drawOverlay() {
   arduboy.fillRect(overlay.px, y, WIDTH - overlay.px, bottom - y, overlay.fill ? WHITE : BLACK);
 }
 
-void drawStringAt(int16_t x, int16_t y, const char* str) {
+//#IF TEXT_VARS
+// Walk a PROGMEM string from position 'from', expanding each "$name" marker the
+// compiler left behind into that variable's digits. Draws at most 'limit' of the
+// characters the player sees (0xFFFF for all of them) and returns how many the
+// range holds, so one walk both measures and renders — no RAM buffer, which
+// matters more here than the handful of instructions it costs.
+uint16_t walkText(int16_t x, int16_t y, const char* str, uint16_t from, uint16_t limit, bool draw) {
   int16_t cx = x, cy = y;
-  for (uint16_t i = 0;; i++) {
+  uint16_t shown = 0;
+  for (uint16_t i = from;; i++) {
     char c = (char)pgm_read_byte(str + i);
-    if (c == '\\0') return;
+    if (c == '\\0' || c == '\\f') return shown;
     if (c == '\\n') { cx = x; cy += 8; continue; }
-    arduboy.drawChar(cx, cy, c, WHITE, BLACK, 1);
+    if (c == 1) {
+      // Marker: the next byte is the variable index plus one.
+      uint8_t v = (uint8_t)pgm_read_byte(str + (++i)) - 1;
+      uint8_t value = v < NUM_VARS ? vars[v] : 0;
+      char digits[3];
+      uint8_t n = 0;
+      do { digits[n++] = '0' + (value % 10); value /= 10; } while (value);
+      while (n--) {
+        if (shown >= limit) return shown;
+        if (draw) arduboy.drawChar(cx, cy, digits[n], WHITE, BLACK, 1);
+        cx += 6;
+        shown++;
+      }
+      continue;
+    }
+    if (shown >= limit) return shown;
+    if (draw) arduboy.drawChar(cx, cy, c, WHITE, BLACK, 1);
     cx += 6;
+    shown++;
   }
+}
+//#ENDIF
+//#IF !TEXT_VARS
+// No text in this game shows a variable, so the walk is a plain copy.
+uint16_t walkText(int16_t x, int16_t y, const char* str, uint16_t from, uint16_t limit, bool draw) {
+  int16_t cx = x, cy = y;
+  uint16_t shown = 0;
+  for (uint16_t i = from;; i++) {
+    char c = (char)pgm_read_byte(str + i);
+    if (c == '\\0' || c == '\\f') return shown;
+    if (c == '\\n') { cx = x; cy += 8; continue; }
+    if (shown >= limit) return shown;
+    if (draw) arduboy.drawChar(cx, cy, c, WHITE, BLACK, 1);
+    cx += 6;
+    shown++;
+  }
+}
+//#ENDIF
+
+void drawStringAt(int16_t x, int16_t y, const char* str) {
+  walkText(x, y, str, 0, 0xFFFF, true);
 }
 
 // Background text scrolls with the camera; overlay text is fixed to the screen
@@ -902,7 +949,7 @@ uint16_t textPageEnd() {
 
 void updateText() {
   uint16_t pageEnd = textPageEnd();
-  uint16_t pageLen = pageEnd - textPageStart;
+  uint16_t pageLen = walkText(0, 0, textStr, textPageStart, 0xFFFF, false);
   if (textShown < pageLen) {
     textShown += TEXT_CHARS_PER_FRAME;
     if (textShown > pageLen) textShown = pageLen;
@@ -960,11 +1007,7 @@ void updateMenu() {
 }
 
 void drawMenuLabel(int16_t x, int16_t y, const char* label) {
-  for (uint8_t i = 0; i < 20; i++) {
-    char c = (char)pgm_read_byte(label + i);
-    if (c == '\\0') break;
-    arduboy.drawChar(x + i * 6, y, c, WHITE, BLACK, 1);
-  }
+  walkText(x, y, label, 0, 20, true);
 }
 
 void drawMenu() {
@@ -1661,15 +1704,8 @@ void drawTextbox() {
 //#ENDIF
   arduboy.fillRect(0, 38, 128, 26, BLACK);
   arduboy.drawRect(0, 38, 128, 26, WHITE);
-  int16_t x = 4, y = 40;
-  for (uint16_t i = 0; i < textShown; i++) {
-    char c = (char)pgm_read_byte(textStr + textPageStart + i);
-    if (c == '\\0' || c == '\\f') break;
-    if (c == '\\n') { x = 4; y += 8; continue; }
-    arduboy.drawChar(x, y, c, WHITE, BLACK, 1);
-    x += 6;
-  }
-  uint16_t pageLen = textPageEnd() - textPageStart;
+  walkText(4, 40, textStr, textPageStart, textShown, true);
+  uint16_t pageLen = walkText(0, 0, textStr, textPageStart, 0xFFFF, false);
   if (textShown >= pageLen && (arduboy.frameCount >> 4) & 1) {
     arduboy.drawPixel(122, 59, WHITE);
     arduboy.drawPixel(123, 59, WHITE);
