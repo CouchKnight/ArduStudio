@@ -738,27 +738,6 @@ uint8_t spriteLastFrame(uint8_t idx) {
   return pgm_read_byte(&spriteFrameCount[idx]) - 1;
 }
 
-//#IF OVERLAY
-// Overlay Move To animates towards its target; the script waits for arrival.
-void updateOverlay() {
-  if (!overlay.on) return;
-  if (overlay.speed == 0) { overlay.px = overlay.tx; overlay.py = overlay.ty; return; }
-  overlay.px = moveToward(overlay.px, overlay.tx, overlay.speed);
-  overlay.py = moveToward(overlay.py, overlay.ty, overlay.speed);
-}
-
-bool overlayMoving() {
-  return overlay.on && (overlay.px != overlay.tx || overlay.py != overlay.ty);
-}
-
-void drawOverlay() {
-  if (!overlay.on) return;
-  int16_t y = overlay.py;
-  int16_t bottom = overlayCutoff < HEIGHT ? overlayCutoff : HEIGHT;
-  if (y >= bottom) return;
-  arduboy.fillRect(overlay.px, y, WIDTH - overlay.px, bottom - y, overlay.fill ? WHITE : BLACK);
-}
-
 //#IF TEXT_VARS
 // Walk a PROGMEM string from position 'from', expanding each "$name" marker the
 // compiler left behind into that variable's digits. Draws at most 'limit' of the
@@ -810,6 +789,27 @@ uint16_t walkText(int16_t x, int16_t y, const char* str, uint16_t from, uint16_t
   }
 }
 //#ENDIF
+
+//#IF OVERLAY
+// Overlay Move To animates towards its target; the script waits for arrival.
+void updateOverlay() {
+  if (!overlay.on) return;
+  if (overlay.speed == 0) { overlay.px = overlay.tx; overlay.py = overlay.ty; return; }
+  overlay.px = moveToward(overlay.px, overlay.tx, overlay.speed);
+  overlay.py = moveToward(overlay.py, overlay.ty, overlay.speed);
+}
+
+bool overlayMoving() {
+  return overlay.on && (overlay.px != overlay.tx || overlay.py != overlay.ty);
+}
+
+void drawOverlay() {
+  if (!overlay.on) return;
+  int16_t y = overlay.py;
+  int16_t bottom = overlayCutoff < HEIGHT ? overlayCutoff : HEIGHT;
+  if (y >= bottom) return;
+  arduboy.fillRect(overlay.px, y, WIDTH - overlay.px, bottom - y, overlay.fill ? WHITE : BLACK);
+}
 
 void drawStringAt(int16_t x, int16_t y, const char* str) {
   walkText(x, y, str, 0, 0xFFFF, true);

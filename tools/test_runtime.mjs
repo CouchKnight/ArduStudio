@@ -8,8 +8,9 @@
 import {
   makeDemoProject, makeEvent as makeEventOfType, normalizeProject,
   makeActor as makeActorOfType, makeSpriteState as makeSpriteStateOfType,
+  renameVariableReferences,
 } from '../js/model.js';
-import { compileProject } from '../js/compiler.js';
+import { compileProject, TEXT_VAR_MARKER, displayWidth } from '../js/compiler.js';
 import { generateIno } from '../js/codegen.js';
 import { compileExpression, evalExpression } from '../js/expression.js';
 import { makeAllFeaturesProject } from './all_features_project.mjs';
@@ -1373,6 +1374,192 @@ console.log('— features are only compiled when used —');
   assert(fullIno.includes('evalExpression') && fullIno.includes('drawOverlay'),
     'and its sketch contains those subsystems');
   assert(fullIno.length > bareIno.length, `using everything costs more sketch (${bareIno.length} -> ${fullIno.length})`);
+}
+
+console.log('— variable values inside text —');
+{
+  // "$name" becomes a marker at compile time and the value at display time.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('TEXT'), { text: `Keys: $${v.name}!` }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, `text with a variable compiles clean (${c.warnings.join('; ')})`);
+  assert(c.strings.some((str) => str.includes(TEXT_VAR_MARKER)), 'the string table holds a marker');
+
+  const e = new Emulator(c, { onTone: () => {} });
+  e.vars[0] = 137;
+  runActorScript(e, 0, false);
+  for (let i = 0; i < 200; i++) { e.setButtons(0); e.step(); }
+  assert(e.pageText(e.text) === 'Keys: 137!', `the value is printed (${e.pageText(e.text)})`);
+
+  // Read as it is drawn, so it tracks the variable with no recompile.
+  e.vars[0] = 8;
+  assert(e.pageText(e.text) === 'Keys: 8!', `a changed value re-renders (${e.pageText(e.text)})`);
+}
+
+{
+  // A bare name runs to the first non-word character, so it swallows a letter
+  // that follows; the braced form is how you say where it ends.
+  const v = makeDemoProject().variables[0];
+  const build = (text) => {
+    const p2 = makeDemoProject();
+    p2.scenes[0].scripts.init = [];
+    p2.scenes[0].actors[0].scripts.interact = [Object.assign(makeEventOfType('TEXT'), { text })];
+    return compileProject(p2);
+  };
+  const bare = build(`X$${v.name}Y`);
+  assert(bare.features.TEXT_VARS === false, 'a bare name before a letter does not resolve');
+  assert(bare.warnings.some((w) => w.includes(`$${v.name}Y`)), 'and the warning says which name it looked for');
+
+  const braced = build(`X\${${v.name}}Y`);
+  assert(braced.warnings.length === 0, 'the braced form resolves where the bare one cannot');
+  const e = new Emulator(braced, { onTone: () => {} });
+  e.vars[0] = 42;
+  runActorScript(e, 0, false);
+  for (let i = 0; i < 200; i++) { e.setButtons(0); e.step(); }
+  assert(e.pageText(e.text) === 'X42Y', `and prints the value (${e.pageText(e.text)})`);
+}
+
+{
+  // "$$" writes a literal dollar sign.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('TEXT'), { text: 'Costs $$5' }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.length === 0, 'an escaped dollar needs no warning');
+  assert(c.features.TEXT_VARS === false, 'and is not a variable reference');
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0, false);
+  for (let i = 0; i < 200; i++) { e.setButtons(0); e.step(); }
+  assert(e.pageText(e.text) === 'Costs $5', `the escape prints one dollar (${e.pageText(e.text)})`);
+}
+
+{
+  // A typo warns and stays readable rather than blanking the sentence.
+  const proj = makeDemoProject();
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('TEXT'), { text: 'Have $nosuchvar now' }),
+  ];
+  const c = compileProject(proj);
+  assert(c.warnings.some((w) => w.includes('nosuchvar')), 'an unknown name warns');
+  const e = new Emulator(c, { onTone: () => {} });
+  runActorScript(e, 0, false);
+  for (let i = 0; i < 200; i++) { e.setButtons(0); e.step(); }
+  assert(e.pageText(e.text).includes('$nosuchvar'), 'and prints as written');
+}
+
+{
+  // Wrapping reserves three columns per value — the widest a byte prints — so
+  // a line can never overflow the box once the real value goes in.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('TEXT'), {
+      text: `aaaa bbbb cccc $${v.name} dddd eeee ffff $${v.name} gggg`,
+    }),
+  ];
+  const c = compileProject(proj);
+  const stored = c.strings.find((str) => str.includes(TEXT_VAR_MARKER));
+  for (const line of stored.split(/[\n\f]/)) {
+    assert(displayWidth(line) <= 20, `the stored line reserves room for the value (${displayWidth(line)} columns)`);
+  }
+  const e = new Emulator(c, { onTone: () => {} });
+  e.vars[0] = 255; // the widest a byte can print
+  runActorScript(e, 0, false);
+  for (let i = 0; i < 400; i++) { e.setButtons(0); e.step(); }
+  for (const line of e.pageText(e.text).split('\n')) {
+    assert(line.length <= 20, `the drawn line still fits with a 3-digit value (${line.length})`);
+  }
+}
+
+{
+  // The typewriter reveals the digits one at a time and never leaks a marker.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('TEXT'), { text: `X\${${v.name}}Y` }),
+  ];
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  e.vars[0] = 123;
+  runActorScript(e, 0, false);
+  const seen = new Set();
+  for (let i = 0; i < 40; i++) {
+    e.setButtons(0); e.step();
+    if (e.text) seen.add(e.pageText(e.text).slice(0, e.text.shown));
+  }
+  assert(seen.has('X1'), `the typewriter stops part-way through a value (${[...seen].join('|')})`);
+  assert(seen.has('X123Y'), 'and reaches the whole line');
+  assert(![...seen].some((t) => t.includes(TEXT_VAR_MARKER)), 'a raw marker is never displayed');
+}
+
+{
+  // It works everywhere text is drawn, not just dialogue.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].scripts.init = [];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('DRAW_TEXT'), { text: `S$${v.name}`, x: 0, y: 0, location: 'overlay' }),
+    Object.assign(makeEventOfType('MENU'), {
+      varId: v.id, layout: 'menu', options: [`Buy $${v.name}`, 'Leave'],
+      lastIsZero: false, cancelB: false,
+    }),
+  ];
+  const c = compileProject(proj);
+  assert(!c.warnings.some((w) => w.includes('wider than')),
+    `a menu label is measured with the value at its widest (${c.warnings.join('; ') || 'no warnings'})`);
+  const e = new Emulator(c, { onTone: () => {} });
+  e.vars[0] = 42;
+  runActorScript(e, 0, false);
+  for (let i = 0; i < 20 && !e.menu; i++) { e.setButtons(0); e.step(); }
+  assert(e.drawnText.length === 1, 'Draw Text stored its string');
+  assert(e.menu && e.menu.labels[0].includes(TEXT_VAR_MARKER), 'the label keeps its marker until it is drawn');
+  e.setButtons(0); e.step();
+  assert(e.fb.some((px) => px), 'and the frame renders with values expanded');
+}
+
+{
+  // Renaming carries references along, sparing escapes and longer names.
+  const proj = makeDemoProject();
+  const v = proj.variables[0];
+  proj.scenes[0].actors[0].scripts.interact = [
+    Object.assign(makeEventOfType('TEXT'), {
+      text: `bare $${v.name}, braced \${${v.name}}, escaped $$${v.name}, longer $${v.name}ish`,
+    }),
+    Object.assign(makeEventOfType('EXPR_IF'), { expression: `$${v.name} > 0`, then: [], else: [] }),
+  ];
+  const changed = renameVariableReferences(proj, v.name, 'treasure');
+  const [text, expr] = proj.scenes[0].actors[0].scripts.interact;
+  assert(changed === 2, `both fields were rewritten (${changed})`);
+  assert(text.text.includes('bare $treasure,'), 'the bare reference followed the rename');
+  assert(text.text.includes('braced ${treasure}'), 'so did the braced one');
+  assert(text.text.includes(`escaped $$${v.name}`), 'an escaped dollar was left alone');
+  assert(text.text.includes(`longer $${v.name}ish`), 'a longer name that starts the same was left alone');
+  assert(expr.expression === '$treasure > 0', 'the expression reference followed too');
+}
+
+{
+  // The expansion code is only generated for games that use it.
+  const plain = compileProject(makeDemoProject());
+  assert(plain.features.TEXT_VARS === false, 'the demo shows no variables in text');
+  const { ino: plainIno } = generateIno(makeDemoProject());
+  assert(!plainIno.includes('pgm_read_byte(str + (++i))'),
+    'so its sketch carries no marker-expansion code');
+
+  const full = makeAllFeaturesProject();
+  assert(compileProject(full).features.TEXT_VARS === true, 'the all-features project does use it');
+  const { ino: fullIno } = generateIno(full);
+  assert(fullIno.includes('pgm_read_byte(str + (++i))'), 'and its sketch carries the expansion');
+  // Octal, because a \x escape would swallow the digits of whatever follows.
+  assert(fullIno.includes('\\001\\001'), 'markers are emitted as octal escapes in the generated C');
+  assert(!fullIno.includes(TEXT_VAR_MARKER), 'no raw marker byte leaks into the generated source');
 }
 
 console.log('— project migration —');

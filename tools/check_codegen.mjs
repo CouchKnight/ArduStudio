@@ -33,16 +33,22 @@ for (const [label, project] of projects) {
   const cpp = join(work, `${label}.cpp`);
   writeFileSync(cpp, ino);
   try {
+    // Link, don't just syntax-check. Engine subsystems are stripped from the
+    // sketch when a game does not use them, and a helper left inside the wrong
+    // //#IF region still parses fine — its callers only see the declaration.
+    // Only the linker notices it is gone, so the stub bodies exist to make a
+    // real link possible here rather than at the AVR build.
     execFileSync('g++', [
-      '-x', 'c++', '-std=c++11', '-fsyntax-only',
+      '-x', 'c++', '-std=c++11',
       '-Wall', '-Wextra', '-Wno-unused-parameter',
       '-I', join(root, 'tools', 'stubs'),
-      cpp,
+      cpp, join(root, 'tools', 'stubs', 'stubs.cpp'),
+      '-o', join(work, `${label}.bin`),
     ], { stdio: 'pipe' });
-    console.log(`[${label}] OK — generated sketch compiles cleanly (${ino.length} chars)`);
+    console.log(`[${label}] OK — generated sketch compiles and links (${ino.length} chars)`);
   } catch (err) {
     failed = true;
-    console.error(`[${label}] FAILED g++ syntax check:`);
+    console.error(`[${label}] FAILED g++ compile/link:`);
     console.error(err.stderr ? err.stderr.toString() : err.message);
     console.error(`Sketch left at ${cpp}`);
   }
