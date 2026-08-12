@@ -3,7 +3,9 @@
 // would break.
 
 import { el, clear } from './ui.js';
-import { uid, MAX_VARIABLES, sceneScripts } from './model.js';
+import {
+  uid, MAX_VARIABLES, sceneScripts, renameVariableReferences, TEXT_FIELDS_WITH_VARS,
+} from './model.js';
 
 // Walk every script in the project and collect where each variable is used.
 function collectUsages(project) {
@@ -18,9 +20,23 @@ function collectUsages(project) {
     STORE_ACTOR_DIR: 'store direction',
   };
   const BRANCHING = ['IF_VAR', 'IF_INPUT', 'IF_ACTOR_AT', 'IF_ACTOR_DISTANCE'];
+  // "$name" in on-screen text or in a math expression is a use too — and the
+  // one most easily broken by a rename, so it belongs in this list.
+  const byName = new Map(project.variables.map((v) => [String(v.name), v.id]));
+  const addNamed = (str, where, how) => {
+    for (const m of String(str).matchAll(/(^|[^$])\$\{?([A-Za-z0-9_]+)\}?/g)) {
+      if (byName.has(m[2])) add(byName.get(m[2]), where, how);
+    }
+  };
   const walk = (events, where) => {
     for (const ev of events || []) {
       if (HOW[ev.type]) add(ev.varId, where, HOW[ev.type]);
+      for (const key of TEXT_FIELDS_WITH_VARS) {
+        if (typeof ev[key] === 'string') {
+          addNamed(ev[key], where, key === 'expression' ? 'expression' : 'shown in text');
+        }
+      }
+      if (Array.isArray(ev.options)) for (const o of ev.options) addNamed(o, where, 'shown in text');
       // Menus write their result into a variable too.
       if (ev.type === 'MENU' || ev.type === 'CHOICE') add(ev.varId, where, 'menu');
       // Store Actor Position writes two variables rather than one.
@@ -61,7 +77,11 @@ export function initVariablesTab(app) {
         el('td', {}, el('input', {
           type: 'text', value: v.name,
           onchange: (e) => {
-            v.name = e.target.value.replace(/[^A-Za-z0-9_]+/g, '_') || `var_${i}`;
+            const next = e.target.value.replace(/[^A-Za-z0-9_]+/g, '_') || `var_${i}`;
+            // Text and expressions name variables rather than pointing at them,
+            // so carry every "$old" across to the new name.
+            renameVariableReferences(app.project, v.name, next);
+            v.name = next;
             app.save();
             refresh();
           },

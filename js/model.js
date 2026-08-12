@@ -173,6 +173,43 @@ export function forEachEvent(events, fn) {
   }
 }
 
+// Fields whose contents can name a variable as "$name": the text drawn on
+// screen, and the two math-expression events.
+export const TEXT_FIELDS_WITH_VARS = ['text', 'expression', 'trueLabel', 'falseLabel'];
+
+// Rewrite every "$old" reference to "$new" across a project's text and
+// expressions. These name variables rather than pointing at them, so without
+// this a rename would quietly break every sentence and condition that mentions
+// the variable. Leaves "$$old" alone (an escaped dollar) and "$oldish" alone
+// (a different name that merely starts the same way).
+export function renameVariableReferences(project, oldName, newName) {
+  if (!oldName || oldName === newName) return 0;
+  const bare = new RegExp(`(^|[^$])\\$${oldName}\\b`, 'g');
+  const braced = new RegExp(`(^|[^$])\\$\\{${oldName}\\}`, 'g');
+  const swap = (str) => String(str)
+    .replace(bare, `$1$$${newName}`)
+    .replace(braced, `$1$\{${newName}}`);
+  let changed = 0;
+  const visit = (ev) => {
+    for (const key of TEXT_FIELDS_WITH_VARS) {
+      if (typeof ev[key] !== 'string') continue;
+      const next = swap(ev[key]);
+      if (next !== ev[key]) { ev[key] = next; changed++; }
+    }
+    if (Array.isArray(ev.options)) {
+      ev.options = ev.options.map((o) => {
+        const next = swap(o);
+        if (next !== o) changed++;
+        return next;
+      });
+    }
+  };
+  for (const sc of project.scenes) {
+    for (const { events } of sceneScripts(sc)) forEachEvent(events, visit);
+  }
+  return changed;
+}
+
 // Every top-level script list in a scene, with a label describing where it
 // came from. One place to add a slot, so nothing silently misses a script.
 export function sceneScripts(scene) {
