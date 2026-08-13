@@ -373,16 +373,13 @@ struct {
   bool animLoop;
 } player;
 
-// The player has no facing field, only the direction it last walked.
-uint8_t playerFacing() {
-  if (player.fy > 0) return ${DIR_CODE.down};
-  if (player.fy < 0) return ${DIR_CODE.up};
-  if (player.fx < 0) return ${DIR_CODE.left};
-  return ${DIR_CODE.right};
-}
-
 // A script context. "script" is the blocking VM; "scratch" is reused by every
 // On Update script, which must finish inside its frame.
+//
+// This must stay ABOVE the first function definition in the sketch. The Arduino
+// IDE inserts its generated prototypes there, and runScript() takes a ScriptCtx&
+// — declare the type any later and every export fails to compile in the IDE
+// while still building fine as a .cpp. tools/check_codegen.mjs guards this.
 struct ScriptCtx {
   uint16_t pc;
   uint8_t self;
@@ -395,6 +392,14 @@ struct ScriptCtx {
 };
 ScriptCtx script = { 0, 0xFF, 0, 0, -1, false, false, false };
 ScriptCtx scratch = { 0, 0xFF, 0, 0, -1, false, false, false };
+
+// The player has no facing field, only the direction it last walked.
+uint8_t playerFacing() {
+  if (player.fy > 0) return ${DIR_CODE.down};
+  if (player.fy < 0) return ${DIR_CODE.up};
+  if (player.fx < 0) return ${DIR_CODE.left};
+  return ${DIR_CODE.right};
+}
 
 int8_t armedTrigger = -1;
 int8_t armedHit = -1;
