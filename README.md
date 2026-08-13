@@ -78,6 +78,14 @@ of the default action), `Remove Button Script`, `Pause Script Until Input Presse
 `Play / Stop Song`, `Set RGB LED` (analog PWM or digital on/off), `Save Game`, `Load Game`,
 `Save Exists → Var`, `Delete Save`, `Wait`, `Stop Script`.
 
+Most actor events can target **the player** as well as *Self* or a named scene actor —
+`Set Actor Sprite`, `Actor Effects`, `Set Actor Direction`, `Hide / Show Actor` and
+`Set Actor Animation Frame / Speed / State`, on top of the query events that already
+could. That is how you do a sword swing (swap the player's sprite, wait, swap back) or a
+damage flash. Hiding the player is visual only — it keeps moving and still fires triggers.
+`Set Actor Movement Speed` and `Move Actor` stay actor-only: the player walks tile-by-tile
+rather than at a pixel speed, and `Teleport Player` already covers moving it.
+
 ### Script lifecycle
 
 Each entity carries several named scripts, picked from a tab strip in the inspector:
@@ -180,11 +188,11 @@ usable flash and 2,560 bytes of RAM:
 
 | Project | Flash | RAM |
 |---|---|---|
-| Key Quest demo | 22,960 | 1,940 |
-| Every subsystem at once | 26,512 | 2,038 |
+| Key Quest demo | 23,372 | 1,949 |
+| Every subsystem at once | 26,934 | 2,047 |
 
 The optional subsystems come to about 3.4 KB of flash in total, so a game reaching for all of
-them has roughly 2.3 KB left for its own scenes and art.
+them has roughly 1.9 KB left for its own scenes and art.
 
 ## Offline / desktop builds
 

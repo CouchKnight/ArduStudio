@@ -402,10 +402,9 @@ export function compileProject(project) {
         case 'ACTOR_HIDE':
         case 'ACTOR_SHOW': {
           const op = ev.type === 'ACTOR_HIDE' ? OP.ACTOR_HIDE : OP.ACTOR_SHOW;
-          if (ev.target === 'self') { emit(op, 0xff); break; }
-          const ai = scene ? scene.actors.findIndex((a) => a.id === ev.target) : -1;
-          if (ai < 0) { warnings.push(`${ctx}: ${ev.type === 'ACTOR_HIDE' ? 'Hide' : 'Show'} Actor target not in this scene — skipped`); break; }
-          emit(op, ai);
+          const idx = actorTarget(ev, scene, ctx, `${ev.type === 'ACTOR_HIDE' ? 'Hide' : 'Show'} Actor`);
+          if (idx < 0) break;
+          emit(op, idx);
           break;
         }
         case 'SET_TILE':
@@ -475,11 +474,8 @@ export function compileProject(project) {
           break;
         }
         case 'SET_ACTOR_SPRITE': {
-          let idx = 0xff;
-          if (ev.target !== 'self') {
-            idx = scene ? scene.actors.findIndex((a) => a.id === ev.target) : -1;
-            if (idx < 0) { warnings.push(`${ctx}: Set Actor Sprite target not in this scene — skipped`); break; }
-          }
+          const idx = actorTarget(ev, scene, ctx, 'Set Actor Sprite');
+          if (idx < 0) break;
           const spriteIdx = project.sprites.findIndex((s) => s.id === ev.spriteId);
           if (spriteIdx < 0) { warnings.push(`${ctx}: Set Actor Sprite has no sprite selected — skipped`); break; }
           emit(OP.SET_ACTOR_SPRITE, idx, spriteIdx);
@@ -541,6 +537,13 @@ export function compileProject(project) {
         case 'SET_ACTOR_SPEED': {
           const idx = actorTarget(ev, scene, ctx, 'Set Actor Movement Speed');
           if (idx < 0) break;
+          // The player walks tile-by-tile rather than at a pixel speed, so there
+          // is nothing for this to set. Say so instead of emitting an opcode the
+          // runtimes would quietly ignore.
+          if (idx === ACTOR_REF_PLAYER) {
+            warnings.push(`${ctx}: Set Actor Movement Speed cannot target the player — skipped`);
+            break;
+          }
           const speed = ACTOR_SPEEDS.some((s) => s.value === ev.speed) ? ev.speed : 1;
           emit(OP.SET_ACTOR_SPEED, idx, speed);
           break;

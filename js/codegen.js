@@ -244,6 +244,9 @@ ArduboyTones sound(arduboy.audio.enabled);
 // ---------------------------------------------------------------------------
 
 #define PLAYER_SPEED 2
+// Frames between steps of the player's built-in walk cycle, and the rate a
+// scripted animation state inherits when the player has none of its own.
+#define PLAYER_ANIM_INTERVAL 8
 #define ACTOR_MOVE_INTERVAL 48
 #define ANIM_INTERVAL 20
 #define TEXT_CHARS_PER_FRAME 2
@@ -353,12 +356,21 @@ TileOverride overrides[MAX_TILE_OVERRIDES];
 uint8_t overrideCount = 0;
 int16_t camX = 0, camY = 0;
 
+// Mirrors the emulator's player object: the same mutable fields an Actor has,
+// so the actor events can drive either. No facing field — direction lives in
+// fx/fy, and a second copy would drift as soon as the player walks.
 struct {
   int16_t px, py;
   uint8_t tx, ty;
   int8_t fx, fy;
   uint8_t frame, anim;
   bool moving;
+  uint8_t spriteIdx;
+  bool hidden;
+  uint8_t effect, effectFrames;
+  bool animate;
+  uint8_t animSpeed, animFrom, animTo;
+  bool animLoop;
 } player;
 
 // The player has no facing field, only the direction it last walked.
@@ -845,7 +857,7 @@ bool boxesOverlap(int16_t ax, int16_t ay, uint8_t aw, uint8_t ah,
 // with nothing to say falls back to the scene's On Player Hit. Like triggers,
 // a hit re-arms only once the two separate.
 void checkCollisions() {
-  uint8_t pw = spriteWidth(PLAYER_SPRITE), ph = spriteHeight(PLAYER_SPRITE);
+  uint8_t pw = spriteWidth(player.spriteIdx), ph = spriteHeight(player.spriteIdx);
   for (uint8_t i = 0; i < actorCount; i++) {
     ActorState& a = actors[i];
     if (a.hidden || a.def.group == 0) continue;
@@ -868,7 +880,7 @@ void launchProjectile(uint8_t src, uint8_t spriteIdx, uint8_t dirCode,
   uint8_t facing, srcSprite;
   if (src == PROJECTILE_SRC_PLAYER) {
     x = player.px; y = player.py;
-    srcSprite = PLAYER_SPRITE;
+    srcSprite = player.spriteIdx;
     facing = playerFacing();
   } else {
     if (src >= actorCount) return;
@@ -1132,6 +1144,9 @@ void runScript(ScriptCtx& s) {
         return;
       case 9: case 10: { // ACTOR_HIDE / ACTOR_SHOW
         uint8_t idx = codeAt(s.pc++);
+        // For the player this is draw-only: it keeps moving and keeps firing
+        // triggers, so a cutscene that hides it cannot strand the game.
+        if (idx == ACTOR_REF_PLAYER) { player.hidden = (op == 9); break; }
         if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) actors[idx].hidden = (op == 9);
         break;
@@ -1221,6 +1236,15 @@ void runScript(ScriptCtx& s) {
       case 22: { // SET_ACTOR_SPRITE
         uint8_t idx = codeAt(s.pc++);
         uint8_t spriteIdx = codeAt(s.pc++);
+        if (idx == ACTOR_REF_PLAYER) {
+          player.spriteIdx = spriteIdx;
+          // Reseed the playing range: the old one described the old sprite.
+          uint8_t last = spriteLastFrame(spriteIdx);
+          player.animFrom = 0;
+          player.animTo = last;
+          if (player.frame > last) player.frame = 0;
+          break;
+        }
         if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) {
           actors[idx].spriteIdx = spriteIdx;
@@ -1264,6 +1288,17 @@ void runScript(ScriptCtx& s) {
       case 27: { // SET_ACTOR_DIR
         uint8_t idx = codeAt(s.pc++);
         uint8_t dir = codeAt(s.pc++);
+        // The player stores direction as the dx/dy it last walked, which is what
+        // playerFacing() reads back and what Launch Projectile aims by.
+        if (idx == ACTOR_REF_PLAYER) {
+          switch (dir) {
+            case ${DIR_CODE.down}: player.fx = 0; player.fy = 1; break;
+            case ${DIR_CODE.up}:   player.fx = 0; player.fy = -1; break;
+            case ${DIR_CODE.left}: player.fx = -1; player.fy = 0; break;
+            default:               player.fx = 1; player.fy = 0; break;
+          }
+          break;
+        }
         if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) actors[idx].facing = dir;
         break;
@@ -1279,6 +1314,7 @@ void runScript(ScriptCtx& s) {
         uint8_t idx = codeAt(s.pc++);
         uint8_t effect = codeAt(s.pc++);
         uint8_t frames = codeAt(s.pc++);
+        if (idx == ACTOR_REF_PLAYER) { player.effect = effect; player.effectFrames = frames; break; }
         if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) { actors[idx].effect = effect; actors[idx].effectFrames = frames; }
         break;
@@ -1430,6 +1466,11 @@ void runScript(ScriptCtx& s) {
       case 44: { // SET_ANIM_FRAME
         uint8_t idx = codeAt(s.pc++);
         uint8_t frame = codeAt(s.pc++);
+        if (idx == ACTOR_REF_PLAYER) {
+          uint8_t last = spriteLastFrame(player.spriteIdx);
+          player.frame = frame < last ? frame : last;
+          break;
+        }
         if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) {
           uint8_t last = spriteLastFrame(actors[idx].spriteIdx);
@@ -1440,6 +1481,7 @@ void runScript(ScriptCtx& s) {
       case 45: { // SET_ANIM_SPEED
         uint8_t idx = codeAt(s.pc++);
         uint8_t speed = codeAt(s.pc++);
+        if (idx == ACTOR_REF_PLAYER) { player.animSpeed = speed; player.anim = 0; break; }
         if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) { actors[idx].animSpeed = speed; actors[idx].anim = 0; }
         break;
@@ -1448,6 +1490,20 @@ void runScript(ScriptCtx& s) {
         uint8_t idx = codeAt(s.pc++);
         uint8_t stateIdx = codeAt(s.pc++);
         uint8_t loop = codeAt(s.pc++);
+        if (idx == ACTOR_REF_PLAYER) {
+          if (stateIdx < pgm_read_byte(&spriteStateCount[player.spriteIdx])) {
+            uint8_t at = pgm_read_byte(&spriteStateStart[player.spriteIdx]) + stateIdx;
+            player.animFrom = pgm_read_byte(&spriteStates[at * 2]);
+            player.animTo = pgm_read_byte(&spriteStates[at * 2 + 1]);
+            player.animLoop = loop != 0;
+            player.frame = player.animFrom;
+            player.anim = 0;
+            // An actor's rate comes from its definition; the player has none, so
+            // give it the walk cycle's rate or the state would never advance.
+            if (player.animSpeed == 0) player.animSpeed = PLAYER_ANIM_INTERVAL;
+          }
+          break;
+        }
         if (idx == 0xFF) idx = s.self;
         if (idx < actorCount) {
           ActorState& a = actors[idx];
@@ -1552,13 +1608,32 @@ int16_t moveToward(int16_t cur, int16_t goal, int16_t speed) {
   return cur;
 }
 
+// Untouched by a script the player keeps its two-frame walk cycle, which only
+// runs while walking; once Set Actor Animation Speed/State has given it a real
+// animation that plays on its own terms, including while standing still.
+void advancePlayerAnim() {
+  if (player.effectFrames > 0 && --player.effectFrames == 0) player.effect = 0;
+  if (player.animSpeed > 0) {
+    if (!player.animate || player.animTo <= player.animFrom) return;
+    player.anim++;
+    if (player.anim >= player.animSpeed) {
+      player.anim = 0;
+      if (player.frame < player.animTo) player.frame++;
+      else if (player.animLoop) player.frame = player.animFrom;
+    }
+    return;
+  }
+  if (!player.moving) return;
+  player.anim++;
+  if (player.anim % PLAYER_ANIM_INTERVAL == 0) player.frame ^= 1;
+}
+
 void updatePlayer() {
+  advancePlayerAnim();
   if (player.moving) {
     int16_t gx = player.tx * TILE_PX, gy = player.ty * TILE_PX;
     player.px = moveToward(player.px, gx, PLAYER_SPEED);
     player.py = moveToward(player.py, gy, PLAYER_SPEED);
-    player.anim++;
-    if (player.anim % 8 == 0) player.frame ^= 1;
     if (player.px == gx && player.py == gy) player.moving = false;
     return;
   }
@@ -1794,8 +1869,13 @@ void drawFrame() {
     Sprites::drawSelfMasked(p.px - camX, p.py - camY, spr, 0);
   }
 //#ENDIF
-  const uint8_t* pspr = (const uint8_t*)pgm_read_ptr(&sprites[PLAYER_SPRITE]);
-  Sprites::drawSelfMasked(player.px - camX, player.py - camY, pspr, player.frame);
+  // Same hidden/flicker/shake treatment the actors get, and the player's own
+  // sprite so Set Actor Sprite can swap it at runtime.
+  if (!player.hidden && !(player.effect == 1 && ((arduboy.frameCount >> 1) & 1))) {
+    int8_t pshake = (player.effect == 2) ? ((arduboy.frameCount & 1) ? 1 : -1) : 0;
+    const uint8_t* pspr = (const uint8_t*)pgm_read_ptr(&sprites[player.spriteIdx]);
+    Sprites::drawSelfMasked(player.px + pshake - camX, player.py - camY, pspr, player.frame);
+  }
 //#IF FADE
   applyFade();
 //#ENDIF
@@ -1815,6 +1895,11 @@ void setup() {
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) buttonScript[i] = 0xFF;
   player.fx = 0; player.fy = 1;
   player.frame = 0; player.anim = 0;
+  player.spriteIdx = PLAYER_SPRITE;
+  player.hidden = false;
+  player.effect = 0; player.effectFrames = 0;
+  player.animate = true; player.animSpeed = 0;
+  player.animFrom = 0; player.animTo = spriteLastFrame(PLAYER_SPRITE); player.animLoop = true;
   loadScene(START_SCENE, START_X, START_Y, true);
 }
 

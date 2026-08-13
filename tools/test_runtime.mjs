@@ -436,6 +436,76 @@ console.log('— Set Actor Sprite —');
   assert(e3.actors[0].frame === 0, `frame clamped for a shorter sprite (got ${e3.actors[0].frame})`);
 }
 
+console.log('— actor events targeting the player —');
+{
+  // Run events from the scene's On Init so nothing has to be interacted with.
+  // `build` receives the project, since makeDemoProject() mints fresh ids.
+  const runOnInit = (build, frames = 12) => {
+    const proj = makeDemoProject();
+    const evs = build(proj);
+    proj.scenes[0].scripts.init = Array.isArray(evs) ? evs : [evs];
+    const c = compileProject(proj);
+    const e = new Emulator(c, { onTone: () => {} });
+    for (let i = 0; i < frames; i++) { e.setButtons(0); e.step(); }
+    return { c, e };
+  };
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+
+  {
+    const { c, e } = runOnInit((p) => ev('SET_ACTOR_SPRITE', { target: 'player', spriteId: p.sprites[2].id }));
+    assert(c.warnings.length === 0, `Set Actor Sprite on the player compiles cleanly (${c.warnings.join('; ') || 'none'})`);
+    assert(e.player.spriteIdx === 2, `player sprite swapped (got ${e.player.spriteIdx})`);
+    assert(e.player.animTo === e.spriteLastFrame(2), 'and its frame range was reseeded for the new sprite');
+  }
+
+  {
+    const { e } = runOnInit(() => ev('ACTOR_EFFECT', { target: 'player', effect: 'flicker', frames: 30 }));
+    assert(e.player.effect === 1 && e.player.effectFrames > 0, 'Actor Effects flickers the player');
+    const { x, y } = { x: e.player.px, y: e.player.py };
+    e.setButtons(0); e.step();
+    assert(e.player.px === x && e.player.py === y, 'and it is draw-only — the player has not moved');
+  }
+
+  {
+    // Facing must round-trip through fx/fy, which is what aims a projectile.
+    const { e } = runOnInit(() => ev('SET_ACTOR_DIR', { target: 'player', direction: 'left' }));
+    assert(e.player.fx === -1 && e.player.fy === 0, `Set Actor Direction turned the player left (fx=${e.player.fx}, fy=${e.player.fy})`);
+    assert(e.refFacing(0xfe, 0) === 3, `and refFacing() reads it back as Left (got ${e.refFacing(0xfe, 0)})`);
+  }
+
+  {
+    const { e } = runOnInit(() => ev('ACTOR_HIDE', { target: 'player' }));
+    assert(e.player.hidden === true, 'Hide Actor hides the player');
+    // Hiding must stay purely visual, or a cutscene would strand the game.
+    const before = e.player.px;
+    e.setButtons(BTN.RIGHT);
+    for (let i = 0; i < 8; i++) e.step();
+    assert(e.player.px !== before, 'but the player can still walk while hidden');
+  }
+
+  {
+    // 10 is a real ANIM_SPEEDS value; an arbitrary number falls back to 20.
+    const { e } = runOnInit(() => ev('SET_ANIM_SPEED', { target: 'player', speed: 10 }));
+    assert(e.player.animSpeed === 10, `Set Actor Animation Speed drives the player (got ${e.player.animSpeed})`);
+    // Freeze the animation first, or the frame we set would advance away from it.
+    const frozen = runOnInit(() => [
+      ev('SET_ANIM_SPEED', { target: 'player', speed: 0 }),
+      ev('SET_ANIM_FRAME', { target: 'player', frame: 1 }),
+    ]).e;
+    assert(frozen.player.frame === 1, `Set Actor Animation Frame drives the player (got ${frozen.player.frame})`);
+  }
+
+  {
+    // Out of scope: the player has no pixel speed, so this must say so loudly
+    // rather than compiling to an opcode the runtimes ignore.
+    const proj = makeDemoProject();
+    proj.scenes[0].scripts.init = [ev('SET_ACTOR_SPEED', { target: 'player', speed: 2 })];
+    const c = compileProject(proj);
+    assert(c.warnings.some((w) => /cannot target the player/.test(w)),
+      `Set Actor Movement Speed on the player warns (${c.warnings.join('; ') || 'no warnings'})`);
+  }
+}
+
 console.log('— Attach / Remove Button Script —');
 {
   // B opens a dialogue; B is not a movement button, so no override needed.
