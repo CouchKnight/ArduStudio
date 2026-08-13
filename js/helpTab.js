@@ -286,9 +286,9 @@ value. Type <code>$</code> and the editor drops down a list of your variables to
 pick one and it writes the reference for you.</p>
 <table>
   <tr><td><code>$name</code></td><td>prints that variable's value</td></tr>
-  <tr><td><code>${name}</code></td><td>the same, when the value is followed straight away by
+  <tr><td><code>\${name}</code></td><td>the same, when the value is followed straight away by
       more letters — <code>$goldcoins</code> would read as a variable called
-      <i>goldcoins</i>, so write <code>${gold}coins</code></td></tr>
+      <i>goldcoins</i>, so write <code>\${gold}coins</code></td></tr>
   <tr><td><code>$$</code></td><td>a literal dollar sign</td></tr>
 </table>
 <p>The value is read at the moment it is drawn, not when the script starts, so text that

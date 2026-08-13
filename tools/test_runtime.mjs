@@ -1584,6 +1584,32 @@ console.log('— project migration —');
   assert(e.sceneIdx === 0, 'a migrated project boots and runs');
 }
 
+// The help text is one long template literal, so a `${...}` written to
+// document syntax rather than to interpolate is evaluated as JavaScript. That
+// throws inside initHelpTab(), which main.js calls while building the tabs —
+// before it wires up the nav — leaving every tab visible but inert. Cheap to
+// write, very expensive to notice by eye, so assert on it.
+console.log('— help tab —');
+{
+  let html = '';
+  const realDocument = globalThis.document;
+  globalThis.document = { getElementById: () => ({ set innerHTML(v) { html = v; } }) };
+  let threw = null;
+  try {
+    const { initHelpTab } = await import('../js/helpTab.js');
+    initHelpTab();
+  } catch (e) {
+    threw = e;
+  } finally {
+    if (realDocument === undefined) delete globalThis.document;
+    else globalThis.document = realDocument;
+  }
+  assert(!threw, `initHelpTab() runs without throwing${threw ? ` (got ${threw.message})` : ''}`);
+  assert(html.includes('$name'), 'help documents the bare $name form');
+  assert(html.includes('${name}'), 'help documents the braced ${name} form literally');
+  assert(html.includes('${gold}coins'), 'help shows the ${gold}coins disambiguation example');
+}
+
 console.log('— bytecode sanity —');
 assert(compiled.code.length > 40 && compiled.code.length < 4096, `bytecode size sensible (${compiled.code.length} bytes)`);
 assert(compiled.strings.every((s) => s.split('\f').every((p) => p.split('\n').length <= 3 && p.split('\n').every((l) => l.length <= 20))), 'all strings wrapped to 20 chars x 3 lines per page');
