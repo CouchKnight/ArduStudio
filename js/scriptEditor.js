@@ -351,7 +351,7 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       break;
     case 'ACTOR_HIDE':
     case 'ACTOR_SHOW': {
-      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
       break;
     }
     case 'ACTOR_MOVE': {
@@ -410,7 +410,7 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       fields.append(el('span', { class: 'hint' }, 'Erases the saved game.'));
       break;
     case 'SET_ACTOR_SPRITE': {
-      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
       const sprSel = el('select', { onchange: () => { ev.spriteId = sprSel.value; changed(); } });
       sprSel.append(el('option', { value: '' }, '(pick sprite)'));
       for (const s of project.sprites) {
@@ -558,7 +558,7 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       break;
     }
     case 'SET_ACTOR_DIR':
-      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
       fields.append(el('label', {}, 'Direction', keySelect('direction', DIRECTIONS)));
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
         'Also decides which way Launch Projectile fires when it follows the actor.'));
@@ -568,7 +568,7 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       fields.append(el('label', {}, 'Speed', optionSelect('speed', ACTOR_SPEEDS)));
       break;
     case 'ACTOR_EFFECT':
-      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
       fields.append(el('label', {}, 'Effect', keySelect('effect', ACTOR_EFFECTS)));
       fields.append(el('label', {}, 'Frames', numInput('frames', 1, 255)));
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
@@ -763,15 +763,15 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       break;
     }
     case 'SET_ANIM_FRAME':
-      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
       fields.append(el('label', {}, 'Animation frame', numInput('frame', 0, 3)));
       break;
     case 'SET_ANIM_SPEED':
-      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
       fields.append(el('label', {}, 'Animation speed', optionSelect('speed', ANIM_SPEEDS)));
       break;
     case 'SET_ANIM_STATE': {
-      fields.append(el('label', {}, 'Actor', actorSelect()));
+      fields.append(el('label', {}, 'Actor', actorSelect('target', [['player', 'Player']])));
       // States belong to the sprite, so list the ones on whichever sprite the
       // chosen actor is showing.
       const target = (ev.target && ev.target !== 'self' && scene)

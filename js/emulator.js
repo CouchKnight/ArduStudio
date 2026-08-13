@@ -25,6 +25,9 @@ const W = 128, H = 64;
 const PLAYER_SPEED = 2;   // px per frame (8px tile / 2 = 4 frames per step)
 const ACTOR_MOVE_INTERVAL = 48; // frames between AI steps
 const ANIM_INTERVAL = 20;       // default frames between animation steps
+// Frames between steps of the player's built-in two-frame walk cycle, and the
+// rate a scripted animation state inherits when the player has none of its own.
+const PLAYER_ANIM_INTERVAL = 8;
 const TEXT_CHARS_PER_FRAME = 2;
 const MAX_TILE_OVERRIDES = 16;  // matches the C++ engine's RAM override table
 const SCRIPT_QUEUE_DEPTH = 8;   // pending init/hit scripts waiting for the VM
@@ -143,7 +146,19 @@ export class Emulator {
     this.buttonScript = new Array(NUM_BUTTONS).fill(NO_SCRIPT);
     this.buttonOverride = 0;
     this.camX = 0; this.camY = 0;
-    this.player = { px: this.g.startX * TILE, py: this.g.startY * TILE, tx: 0, ty: 0, moving: false, fx: 0, fy: 1, frame: 0, anim: 0 };
+    // The player carries the same mutable fields an actor does, under the same
+    // names, so the actor events can drive either through one resolver. There is
+    // deliberately no `facing` here: direction already lives in fx/fy, and a
+    // second copy would drift the moment the player walks.
+    this.player = {
+      px: this.g.startX * TILE, py: this.g.startY * TILE, tx: 0, ty: 0, moving: false,
+      fx: 0, fy: 1, frame: 0, anim: 0,
+      spriteIdx: this.g.playerSpriteIdx,
+      hidden: false,
+      effect: 0, effectFrames: 0,
+      animate: true, animSpeed: 0,
+      animFrom: 0, animTo: this.spriteLastFrame(this.g.playerSpriteIdx), animLoop: true,
+    };
     this.loadScene(this.g.startScene, this.g.startX, this.g.startY, true);
   }
 
@@ -430,14 +445,37 @@ export class Emulator {
     }
   }
 
+  // Advance the player's frame. Untouched by a script the player keeps its
+  // original two-frame walk cycle, which only runs while actually walking; once
+  // Set Actor Animation Speed/State has given it a real animation, that plays on
+  // its own terms — including while standing still, which is what a scripted
+  // sword swing needs.
+  advancePlayerAnim() {
+    const p = this.player;
+    // Same countdown the actors get in updateActors().
+    if (p.effectFrames > 0 && --p.effectFrames === 0) p.effect = 0;
+    if (p.animSpeed > 0) {
+      if (!p.animate || p.animTo <= p.animFrom) return;
+      p.anim++;
+      if (p.anim >= p.animSpeed) {
+        p.anim = 0;
+        if (p.frame < p.animTo) p.frame++;
+        else if (p.animLoop) p.frame = p.animFrom;
+      }
+      return;
+    }
+    if (!p.moving) return;
+    p.anim++;
+    if (p.anim % 8 === 0) p.frame ^= 1;
+  }
+
   updatePlayer() {
     const p = this.player;
+    this.advancePlayerAnim();
     if (p.moving) {
       const gx = p.tx * TILE, gy = p.ty * TILE;
       p.px += Math.sign(gx - p.px) * Math.min(PLAYER_SPEED, Math.abs(gx - p.px));
       p.py += Math.sign(gy - p.py) * Math.min(PLAYER_SPEED, Math.abs(gy - p.py));
-      p.anim++;
-      if (p.anim % 8 === 0) p.frame ^= 1;
       if (p.px === gx && p.py === gy) p.moving = false;
       return;
     }
@@ -512,6 +550,15 @@ export class Emulator {
     return { x: Math.round(a.px / TILE), y: Math.round(a.py / TILE) };
   }
 
+  // The object an actor reference names, or null when it names nothing. The
+  // player carries the same mutable field names as an actor, so events that only
+  // read or write those fields work through this without caring which they got.
+  refActor(ref, self) {
+    if (ref === ACTOR_REF_PLAYER) return this.player;
+    const idx = ref === ACTOR_REF_SELF ? self : ref;
+    return this.actors[idx] || null;
+  }
+
   // Facing code of an actor reference. The player has no stored facing, only
   // the direction it last walked, so derive it from that.
   refFacing(ref, self) {
@@ -537,7 +584,7 @@ export class Emulator {
 
   actorOverlapsPlayer(a) {
     const as = this.spriteSize(a.spriteIdx);
-    const ps = this.spriteSize(this.g.playerSpriteIdx);
+    const ps = this.spriteSize(this.player.spriteIdx);
     return Emulator.overlaps(a.px, a.py, as.w, as.h,
       this.player.px, this.player.py, ps.w, ps.h);
   }
@@ -581,7 +628,7 @@ export class Emulator {
     p.active = true;
     p.spriteIdx = spriteIdx;
     // Start centred on the launcher so a big sprite doesn't shoot from a corner.
-    const src = this.spriteSize(srcIdx === PROJECTILE_SRC_PLAYER ? this.g.playerSpriteIdx : this.actors[srcIdx].spriteIdx);
+    const src = this.spriteSize(srcIdx === PROJECTILE_SRC_PLAYER ? this.player.spriteIdx : this.actors[srcIdx].spriteIdx);
     const own = this.spriteSize(spriteIdx);
     p.px = x + (src.w - own.w) / 2;
     p.py = y + (src.h - own.h) / 2;
@@ -755,9 +802,10 @@ export class Emulator {
         }
         case OP.WAIT: { s.wait = code[s.pc++]; return; }
         case OP.ACTOR_HIDE: case OP.ACTOR_SHOW: {
-          let idx = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          if (idx < this.actors.length) this.actors[idx].hidden = (op === OP.ACTOR_HIDE);
+          // For the player this is draw-only — it keeps moving and keeps firing
+          // triggers, or a cutscene that hid it would strand the game.
+          const a = this.refActor(code[s.pc++], s.self);
+          if (a) a.hidden = (op === OP.ACTOR_HIDE);
           break;
         }
         case OP.SET_TILE: {
@@ -827,15 +875,16 @@ export class Emulator {
           break;
         }
         case OP.SET_ACTOR_SPRITE: {
-          let idx = code[s.pc++];
+          const a = this.refActor(code[s.pc++], s.self);
           const spriteIdx = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          if (idx < this.actors.length) {
-            const a = this.actors[idx];
+          if (a) {
             a.spriteIdx = spriteIdx;
-            // The new sprite may have fewer frames than the old one.
-            const frames = this.g.sprites[spriteIdx].frames.length;
-            if (a.frame >= frames) a.frame = 0;
+            // The new sprite may have fewer frames than the old one, so reseed
+            // the playing range and pull the current frame back inside it.
+            const last = this.spriteLastFrame(spriteIdx);
+            a.animFrom = 0;
+            a.animTo = last;
+            if (a.frame > last) a.frame = 0;
           }
           break;
         }
@@ -869,10 +918,18 @@ export class Emulator {
           break;
         }
         case OP.SET_ACTOR_DIR: {
-          let idx = code[s.pc++];
+          const ref = code[s.pc++];
           const dir = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          if (idx < this.actors.length) this.actors[idx].facing = dir;
+          // The player stores its direction as the dx/dy it last walked rather
+          // than a facing code, so write that instead — refFacing() reads it
+          // back, and Launch Projectile aims by it.
+          if (ref === ACTOR_REF_PLAYER) {
+            const d = DIRECTIONS.find((v) => v.code === dir);
+            if (d) { this.player.fx = d.dx; this.player.fy = d.dy; }
+            break;
+          }
+          const a = this.refActor(ref, s.self);
+          if (a) a.facing = dir;
           break;
         }
         case OP.SET_ACTOR_SPEED: {
@@ -886,13 +943,9 @@ export class Emulator {
           break;
         }
         case OP.ACTOR_EFFECT: {
-          let idx = code[s.pc++];
+          const a = this.refActor(code[s.pc++], s.self);
           const effect = code[s.pc++], frames = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          if (idx < this.actors.length) {
-            this.actors[idx].effect = effect;
-            this.actors[idx].effectFrames = frames;
-          }
+          if (a) { a.effect = effect; a.effectFrames = frames; }
           break;
         }
         case OP.LAUNCH_PROJECTILE: {
@@ -1009,25 +1062,20 @@ export class Emulator {
           break;
         }
         case OP.SET_ANIM_FRAME: {
-          let idx = code[s.pc++];
+          const a = this.refActor(code[s.pc++], s.self);
           const frame = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          const a = this.actors[idx];
           if (a) a.frame = Math.min(frame, this.spriteLastFrame(a.spriteIdx));
           break;
         }
         case OP.SET_ANIM_SPEED: {
-          let idx = code[s.pc++];
+          const a = this.refActor(code[s.pc++], s.self);
           const speed = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          if (this.actors[idx]) { this.actors[idx].animSpeed = speed; this.actors[idx].anim = 0; }
+          if (a) { a.animSpeed = speed; a.anim = 0; }
           break;
         }
         case OP.SET_ANIM_STATE: {
-          let idx = code[s.pc++];
+          const a = this.refActor(code[s.pc++], s.self);
           const stateIdx = code[s.pc++], loop = code[s.pc++];
-          if (idx === 0xff) idx = s.self;
-          const a = this.actors[idx];
           if (a) {
             const states = this.g.sprites[a.spriteIdx].states;
             const st = states && states[stateIdx];
@@ -1037,6 +1085,10 @@ export class Emulator {
               a.animLoop = !!loop;
               a.frame = st.from;
               a.anim = 0;
+              // An actor's rate comes from its definition; the player has none,
+              // so give it the walk cycle's rate the first time a state is set —
+              // otherwise the state would sit on its first frame forever.
+              if (a === this.player && a.animSpeed === 0) a.animSpeed = PLAYER_ANIM_INTERVAL;
             }
           }
           break;
@@ -1279,10 +1331,14 @@ export class Emulator {
       if (!spr) continue;
       this.drawBytesMasked(Math.round(p.px) - this.camX, Math.round(p.py) - this.camY, spr.frames[0], spr.width, spr.height);
     }
-    const pspr = this.g.sprites[this.g.playerSpriteIdx];
-    if (pspr) {
-      const f = pspr.frames[Math.min(this.player.frame, pspr.frames.length - 1)];
-      this.drawBytesMasked(Math.round(this.player.px) - this.camX, Math.round(this.player.py) - this.camY, f, pspr.width, pspr.height);
+    // The player takes the same hidden/flicker/shake treatment as an actor, and
+    // draws from its own sprite so Set Actor Sprite can swap it at runtime.
+    const p = this.player;
+    const pspr = this.g.sprites[p.spriteIdx];
+    if (pspr && !p.hidden && !(p.effect === 1 && ((this.frame >> 1) & 1))) {
+      const shake = p.effect === 2 ? ((this.frame & 1) ? 1 : -1) : 0;
+      const f = pspr.frames[Math.min(p.frame, pspr.frames.length - 1)];
+      this.drawBytesMasked(Math.round(p.px) + shake - this.camX, Math.round(p.py) - this.camY, f, pspr.width, pspr.height);
     }
     this.applyFade();
     this.drawOverlay();

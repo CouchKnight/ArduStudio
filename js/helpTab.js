@@ -170,6 +170,30 @@ drawn with: a chest opening, an NPC changing clothes, an enemy showing damage. I
 new sprite has fewer animation frames than the old one, the actor's frame resets so it
 never points past the end.</p>
 
+<h2>Targeting the player</h2>
+<p>Most actor events can act on <b>the player</b>, not just on <i>Self</i> or a named
+scene actor — pick <b>Player</b> from the <i>Actor</i> dropdown. That covers
+<b>Set Actor Sprite</b>, <b>Actor Effects</b>, <b>Set Actor Direction</b>,
+<b>Hide / Show Actor</b> and <b>Set Actor Animation Frame / Speed / State</b>, alongside
+the questions that already asked about it — <b>If Actor At Position</b>,
+<b>If Actor Distance From Actor</b> and the two <b>Store Actor…</b> events.</p>
+<ul>
+  <li><b>Set Actor Sprite</b> on the player is how you do a sword swing, a costume change
+      or a damage state — swap the sprite, wait, swap it back.</li>
+  <li><b>Actor Effects</b> flickers or shakes the player for a few frames: the usual
+      "you got hit" feedback. Like the actor version it is draw-only.</li>
+  <li><b>Set Actor Direction</b> turns the player on the spot, which also aims a
+      <b>Launch Projectile</b> set to fire in the launcher's own direction.</li>
+  <li><b>Hide Actor</b> on the player is <i>visual only</i> — the player keeps moving and
+      still sets triggers off, so a cutscene cannot strand the game. Remember to
+      <b>Show Actor</b> again afterwards.</li>
+  <li>The player has no animation of its own beyond the two-frame walk cycle, so the
+      first <b>Set Actor Animation State</b> also starts it animating.</li>
+</ul>
+<p class="hint">Two events stay actor-only. <b>Set Actor Movement Speed</b> means nothing
+for a player that walks tile-by-tile rather than at a pixel speed — the exporter warns you
+and skips it — and <b>Move Actor</b> is covered for the player by <b>Teleport Player</b>.</p>
+
 <h2>The RGB LED</h2>
 <p><b>Set RGB LED</b> (in the <b>Hardware</b> group) drives the LED next to the screen —
 ideal feedback for a hit, a pickup or a menu confirmation.</p>
