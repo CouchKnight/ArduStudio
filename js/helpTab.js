@@ -221,10 +221,29 @@ key pickup does. The Play tab shows a live LED dot beside the screen.</p>
 use <b>🗑 Wipe save</b> on the Play tab to test a fresh start. Note that scene changes made with
 <b>Set Tile</b> are <i>not</i> saved; drive anything that must persist from a variable.</p>
 
+<h2>Doing sums with variables</h2>
+<p>Two events in <b>Variables</b> put a calculated result <i>into</i> a variable — this is how
+you work out damage, prices, scores and timers.</p>
+<ul>
+  <li><b>Evaluate Math Expression</b> — set a variable to whatever an expression works out to,
+      such as <code>$health - $defence</code>. Type <code>$</code> to search your variables.</li>
+  <li><b>Math Functions</b> — the same thing without writing an expression: pick the variable,
+      an operation (<i>Set To, Add, Subtract, Multiply, Divide, Modulus</i>) and a value that is
+      a number, another variable, or a random number. The block shows you the expression it is
+      equivalent to, so it doubles as a way to learn the syntax.</li>
+</ul>
+<p>They are the same event underneath — Math Functions compiles to exactly the bytes the
+matching expression would — so pick whichever reads better and mix them freely.</p>
+<p class="hint"><b>Results stop at the ends rather than wrapping.</b> A variable holds 0–255, so
+<code>$health - $defence</code> with 5 health and 10 defence gives <b>0</b>, not 251, and a total
+over 255 stays at 255. <b>Add To Variable</b> behaves the same way. The working out itself has far
+more room — up to ±32767 — so only the final answer is capped.</p>
+
 <h2>Math expressions</h2>
-<p>Two events in <b>Control Flow</b> take an expression rather than a single comparison:
-<b>If Math Expression</b> branches on it, and <b>Loop While Math Expression</b> repeats a
-block for as long as it stays true. Anything non-zero counts as true.</p>
+<p>Three events take an expression rather than a single comparison:
+<b>If Math Expression</b> branches on it, <b>Loop While Math Expression</b> repeats a
+block for as long as it stays true, and <b>Evaluate Math Expression</b> stores its result.
+Anything non-zero counts as true.</p>
 <table>
   <tr><td>Variables</td><td><code>$health</code> — the name from the Variables tab</td></tr>
   <tr><td>Arithmetic</td><td><code>+ - * / %</code>, unary <code>-</code>, and parentheses</td></tr>

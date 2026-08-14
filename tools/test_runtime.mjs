@@ -1851,6 +1851,144 @@ console.log('— copy/paste helpers —');
   }
 }
 
+console.log('— math into a variable —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+
+  // Run a script on a fresh demo project with named starting values, and read
+  // the variables back. `build` gets the project so it can use real ids.
+  const runMath = (build, seed = {}) => {
+    const proj = makeDemoProject();
+    const byName = Object.fromEntries(proj.variables.map((v) => [v.name, v]));
+    const events = build(proj, byName);
+    proj.scenes[0].scripts.init = [
+      ...Object.entries(seed).map(([name, value]) => ev('SET_VAR', { varId: byName[name].id, value })),
+      ...(Array.isArray(events) ? events : [events]),
+    ];
+    const c = compileProject(proj);
+    const e = new Emulator(c, { onTone: () => {} });
+    for (let i = 0; i < 6; i++) { e.setButtons(0); e.step(); }
+    const read = (name) => e.vars[proj.variables.indexOf(byName[name])];
+    return { c, e, read, byName, proj };
+  };
+  // The demo's variables are has_key, intro_seen, asked_way — use them as
+  // stand-ins for health / defence so no project surgery is needed.
+  const HP = 'has_key', DEF = 'intro_seen';
+
+  {
+    const { c, read } = runMath(
+      (p, v) => ev('EXPR_SET', { varId: v[HP].id, expression: `$${HP} - $${DEF}` }),
+      { [HP]: 30, [DEF]: 12 },
+    );
+    assert(c.warnings.length === 0, `Evaluate Math Expression compiles clean (${c.warnings.join('; ') || 'none'})`);
+    assert(read(HP) === 18, `30 - 12 stored 18 (got ${read(HP)})`);
+  }
+
+  {
+    // The case the whole clamp decision was about.
+    const { read } = runMath(
+      (p, v) => ev('EXPR_SET', { varId: v[HP].id, expression: `$${HP} - $${DEF}` }),
+      { [HP]: 5, [DEF]: 10 },
+    );
+    assert(read(HP) === 0, `overkill damage floors at 0, not 251 (got ${read(HP)})`);
+  }
+
+  {
+    const { read } = runMath(
+      (p, v) => ev('EXPR_SET', { varId: v[HP].id, expression: `$${HP} * 10` }),
+      { [HP]: 100 },
+    );
+    assert(read(HP) === 255, `a result over 255 stops at 255 (got ${read(HP)})`);
+  }
+
+  {
+    // Dividing or modding by zero yields 0 rather than trapping the device.
+    const { read } = runMath(
+      (p, v) => [
+        ev('EXPR_SET', { varId: v[HP].id, expression: `$${HP} / $${DEF}` }),
+        ev('EXPR_SET', { varId: v[DEF].id, expression: `7 % 0` }),
+      ],
+      { [HP]: 20, [DEF]: 0 },
+    );
+    assert(read(HP) === 0 && read(DEF) === 0, `divide and modulus by zero store 0 (${read(HP)}, ${read(DEF)})`);
+  }
+
+  {
+    // Math Functions is sugar over the same opcode, so the bytes must match the
+    // equivalent expression exactly. This is what keeps the two honest.
+    const pairs = [
+      ['add', '+'], ['sub', '-'], ['mul', '*'], ['div', '/'], ['mod', '%'],
+    ];
+    for (const [op, symbol] of pairs) {
+      const viaFn = runMath((p, v) => ev('MATH_FN', {
+        varId: v[HP].id, op, srcKind: 'variable', srcVarId: v[DEF].id,
+      })).c.code;
+      const viaExpr = runMath((p, v) => ev('EXPR_SET', {
+        varId: v[HP].id, expression: `$${HP} ${symbol} $${DEF}`,
+      })).c.code;
+      assert(viaFn.length === viaExpr.length && viaFn.every((b, i) => b === viaExpr[i]),
+        `Math Functions "${op}" compiles to the same bytes as "$a ${symbol} $b"`);
+    }
+  }
+
+  {
+    // Each value source.
+    const num = runMath((p, v) => ev('MATH_FN', {
+      varId: v[HP].id, op: 'add', srcKind: 'number', value: 7,
+    }), { [HP]: 10 });
+    assert(num.read(HP) === 17, `Math Functions with a number added 7 (got ${num.read(HP)})`);
+
+    const set = runMath((p, v) => ev('MATH_FN', {
+      varId: v[HP].id, op: 'set', srcKind: 'number', value: 42,
+    }), { [HP]: 10 });
+    assert(set.read(HP) === 42, `"Set To" replaces rather than combines (got ${set.read(HP)})`);
+
+    const rnd = runMath((p, v) => ev('MATH_FN', {
+      varId: v[HP].id, op: 'set', srcKind: 'random', value: 6,
+    }), { [HP]: 99 });
+    assert(rnd.read(HP) >= 0 && rnd.read(HP) < 6, `random stayed within 0..5 (got ${rnd.read(HP)})`);
+
+    const clamped = runMath((p, v) => ev('MATH_FN', {
+      varId: v[HP].id, op: 'sub', srcKind: 'number', value: 50,
+    }), { [HP]: 20 });
+    assert(clamped.read(HP) === 0, `Math Functions clamps too (got ${clamped.read(HP)})`);
+  }
+
+  {
+    // Add To Variable now clamps at both ends instead of wrapping.
+    const low = runMath((p, v) => ev('ADD_VAR', { varId: v[HP].id, delta: -50 }), { [HP]: 10 });
+    assert(low.read(HP) === 0, `Add To Variable floors at 0 rather than wrapping to 216 (got ${low.read(HP)})`);
+    const high = runMath((p, v) => [
+      ev('ADD_VAR', { varId: v[HP].id, delta: 100 }),
+      ev('ADD_VAR', { varId: v[HP].id, delta: 100 }),
+      ev('ADD_VAR', { varId: v[HP].id, delta: 100 }),
+    ], { [HP]: 0 });
+    assert(high.read(HP) === 255, `and stops at 255 rather than wrapping to 44 (got ${high.read(HP)})`);
+  }
+
+  {
+    // A malformed expression is a warning and no opcode, not a broken export.
+    const proj = makeDemoProject();
+    proj.scenes[0].scripts.init = [
+      ev('EXPR_SET', { varId: proj.variables[0].id, expression: '5 +' }),
+    ];
+    const c = compileProject(proj);
+    assert(c.warnings.some((w) => /Evaluate Math Expression/.test(w)),
+      `a malformed expression warns (${c.warnings.join('; ') || 'no warnings'})`);
+  }
+
+  {
+    // Missing variable selections warn rather than compiling to variable 0.
+    const proj = makeDemoProject();
+    proj.scenes[0].scripts.init = [
+      ev('EXPR_SET', { varId: '', expression: '1' }),
+      ev('MATH_FN', { varId: proj.variables[0].id, op: 'add', srcKind: 'variable', srcVarId: '' }),
+    ];
+    const c = compileProject(proj);
+    assert(c.warnings.length >= 2, `both missing-variable cases warn (${c.warnings.join('; ')})`);
+  }
+}
+
 console.log('— bytecode sanity —');
 assert(compiled.code.length > 40 && compiled.code.length < 4096, `bytecode size sensible (${compiled.code.length} bytes)`);
 assert(compiled.strings.every((s) => s.split('\f').every((p) => p.split('\n').length <= 3 && p.split('\n').every((l) => l.length <= 20))), 'all strings wrapped to 20 chars x 3 lines per page');

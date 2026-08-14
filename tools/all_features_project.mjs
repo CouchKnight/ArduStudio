@@ -27,6 +27,9 @@ export function makeAllFeaturesProject() {
     // A Wait keeps this one honest — a Loop with no way out is a compiler warning.
     ev('LOOP', { events: [ev('ADD_VAR', { varId: v.id, delta: 1 }), ev('WAIT', { frames: 1 }), ev('END_SCRIPT', {})] }),
     ev('START_SCRIPT', { target: target.id, slot: 'hit' }),
+    ev('EXPR_SET', { varId: v.id, expression: `min($${v.name} * 2, 100)` }),
+    ev('MATH_FN', { varId: v.id, op: 'sub', srcKind: 'number', value: 5 }),
+    ev('MATH_FN', { varId: v.id, op: 'add', srcKind: 'random', value: 4 }),
     ev('SWITCH', {
       varId: v.id,
       cases: [{ value: 0, events: [ev('SET_VAR', { varId: v.id, value: 2 })] }],
