@@ -72,6 +72,14 @@ function expandText(src, vars) {
   return out;
 }
 
+// Narrow an arithmetic result to what a variable can hold. Intermediates are
+// signed 16-bit, but a variable is a byte, so the store clamps rather than
+// wrapping: "health - defence" with more defence than health floors at 0
+// instead of rolling round to 251.
+function clampByte(v) {
+  return v < 0 ? 0 : (v > 255 ? 255 : v);
+}
+
 // Comparison operators, in the order the CMP table in the compiler assigns.
 function compare(cmp, a, b) {
   switch (cmp) {
@@ -782,7 +790,7 @@ export class Emulator {
         case OP.ADD_VAR: {
           const v = code[s.pc++];
           const d = (code[s.pc++] << 24) >> 24; // sign-extend
-          this.vars[v] = (this.vars[v] + d) & 0xff;
+          this.vars[v] = clampByte(this.vars[v] + d);
           break;
         }
         case OP.IF_VAR: {
@@ -1026,6 +1034,14 @@ export class Emulator {
           const ref = code[s.pc++], vx = code[s.pc++], vy = code[s.pc++];
           const at = this.refTile(ref, s.self);
           if (at) { this.vars[vx] = at.x; this.vars[vy] = at.y; }
+          break;
+        }
+        case OP.EXPR_SET: {
+          const v = code[s.pc++];
+          const len = code[s.pc++];
+          const value = evalExpression(code, s.pc, len, this.vars, (n) => this.rand(n));
+          s.pc += len;
+          this.vars[v] = clampByte(value);
           break;
         }
         case OP.EXPR_IF: {

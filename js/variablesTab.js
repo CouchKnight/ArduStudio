@@ -18,6 +18,7 @@ function collectUsages(project) {
   const HOW = {
     SET_VAR: 'set', ADD_VAR: 'add', IF_VAR: 'if', SAVE_CHECK: 'save-check',
     STORE_ACTOR_DIR: 'store direction',
+    EXPR_SET: 'set from expression', MATH_FN: 'math',
   };
   const BRANCHING = ['IF_VAR', 'IF_INPUT', 'IF_ACTOR_AT', 'IF_ACTOR_DISTANCE'];
   // "$name" in on-screen text or in a math expression is a use too — and the
@@ -44,6 +45,8 @@ function collectUsages(project) {
         add(ev.varX, where, 'store x');
         add(ev.varY, where, 'store y');
       }
+      // Math Functions reads a second variable when its value comes from one.
+      if (ev.type === 'MATH_FN' && ev.srcKind === 'variable') add(ev.srcVarId, where, 'math operand');
       // Recurse into every kind of nested script list.
       if (BRANCHING.includes(ev.type)) { walk(ev.then, where); walk(ev.else, where); }
       if (ev.type === 'ATTACH_SCRIPT') walk(ev.script, `${where} → ${String(ev.button).toUpperCase()} button`);

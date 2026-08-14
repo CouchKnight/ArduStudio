@@ -5,13 +5,13 @@
 
 import {
   SCENE_W, SCENE_H, MAX_VARIABLES,
-  sceneCols, sceneRows, buttonIndex, forEachEvent,
+  sceneCols, sceneRows, buttonIndex, forEachEvent, MATH_OPS,
   pixelsToBytes, sceneById, spriteById,
   ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS, SCENE_SCRIPT_SLOTS, NON_BLOCKING_SLOTS,
   directionCode, effectCode, collisionGroupCode,
   PROJECTILE_DIRS, PROJECTILE_DIR_SOURCE, ACTOR_SPEEDS,
 } from './model.js';
-import { compileExpression } from './expression.js';
+import { compileExpression, EX, MAX_EXPR_BYTES } from './expression.js';
 
 export const OP = {
   END: 0,
@@ -69,6 +69,7 @@ export const OP = {
   OVERLAY_CUTOFF: 50, // y scanline
   DRAW_TEXT: 51,    // strIdx, x, y, location (0 = background, 1 = overlay)
   START_SCRIPT: 52, // scriptIdxLo, scriptIdxHi, selfIdx (0xFF = none)
+  EXPR_SET: 53,     // varIdx, exprLen, expr bytes… — stores the result
 };
 
 // Animation speed: frames between animation steps. 0 freezes the actor.
@@ -666,6 +667,46 @@ export function compileProject(project) {
           emit(OP.STORE_ACTOR_POS, idx, vx, vy);
           break;
         }
+        case 'EXPR_SET': {
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: Evaluate Math Expression has no variable selected — skipped`); break; }
+          const expr = compileExpr(ev.expression, ctx, 'Evaluate Math Expression');
+          if (!expr) break;
+          emit(OP.EXPR_SET, idx, expr.length, ...expr);
+          break;
+        }
+        case 'MATH_FN': {
+          // Sugar over EXPR_SET: build the expression bytes by hand so there is
+          // only ever one implementation of the arithmetic — including the
+          // divide/modulus-by-zero rule — shared with the evaluator.
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: Math Functions has no variable selected — skipped`); break; }
+          const opDef = MATH_OPS.find((o) => o.key === ev.op);
+          if (!opDef) { warnings.push(`${ctx}: Math Functions has an unknown operation — skipped`); break; }
+
+          const operand = [];
+          if (ev.srcKind === 'variable') {
+            const src = varIndex.get(ev.srcVarId);
+            if (src === undefined) { warnings.push(`${ctx}: Math Functions has no source variable selected — skipped`); break; }
+            operand.push(EX.PUSH_VAR, src);
+          } else {
+            const n = byte(ev.value);
+            operand.push(EX.PUSH_CONST, n & 0xff, (n >> 8) & 0xff);
+            // rnd(n) yields 0…n-1, so a bound of 0 could never produce anything.
+            if (ev.srcKind === 'random') {
+              if (n < 1) { warnings.push(`${ctx}: Math Functions random needs a bound of at least 1 — skipped`); break; }
+              operand.push(EX.RND);
+            }
+          }
+
+          const BINOP = { add: EX.ADD, sub: EX.SUB, mul: EX.MUL, div: EX.DIV, mod: EX.MOD };
+          const expr = ev.op === 'set'
+            ? operand
+            : [EX.PUSH_VAR, idx, ...operand, BINOP[ev.op]];
+          if (expr.length > MAX_EXPR_BYTES) { warnings.push(`${ctx}: Math Functions is too complex — skipped`); break; }
+          emit(OP.EXPR_SET, idx, expr.length, ...expr);
+          break;
+        }
         case 'EXPR_IF': {
           const expr = compileExpr(ev.expression, ctx, 'If Math Expression');
           if (!expr) break;
@@ -948,7 +989,7 @@ export function compileProject(project) {
   const uses = (...ops) => ops.some((op) => usedOps.has(op));
   const features = {
     OVERLAY: uses(OP.SHOW_OVERLAY, OP.HIDE_OVERLAY, OP.OVERLAY_MOVE, OP.OVERLAY_CUTOFF, OP.DRAW_TEXT),
-    EXPR: uses(OP.EXPR_IF, OP.EXPR_LOOP),
+    EXPR: uses(OP.EXPR_IF, OP.EXPR_LOOP, OP.EXPR_SET),
     SWITCH: uses(OP.SWITCH),
     SAVES: uses(OP.SAVE_GAME, OP.LOAD_GAME, OP.SAVE_CHECK, OP.DELETE_SAVE),
     SONGS: uses(OP.PLAY_SONG, OP.STOP_SONG) && songs.length > 0,

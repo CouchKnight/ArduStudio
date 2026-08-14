@@ -82,6 +82,25 @@ export const ACTOR_SPEEDS = [
   { value: 4, label: '4 px/frame' },
 ];
 
+// Math Functions. Each operation is the expression operator it compiles to, so
+// the event is pure sugar over the same evaluator "Evaluate Math Expression"
+// uses — there is only ever one implementation of the arithmetic.
+export const MATH_OPS = [
+  { key: 'set', label: 'Set To', symbol: '=' },
+  { key: 'add', label: 'Add', symbol: '+' },
+  { key: 'sub', label: 'Subtract', symbol: '-' },
+  { key: 'mul', label: 'Multiply', symbol: '*' },
+  { key: 'div', label: 'Divide', symbol: '/' },
+  { key: 'mod', label: 'Modulus', symbol: '%' },
+];
+
+// Where a Math Functions operand comes from.
+export const MATH_SOURCES = [
+  { key: 'number', label: 'Number' },
+  { key: 'variable', label: 'Variable' },
+  { key: 'random', label: 'Random' },
+];
+
 export const ACTOR_EFFECTS = [
   { key: 'flicker', label: 'Flicker', code: 1 },
   { key: 'shake', label: 'Shake', code: 2 },
@@ -506,6 +525,14 @@ export function makeEvent(type) {
     case 'SWITCH_SCENE':return { id: uid('ev'), type, sceneId: '', x: 2, y: 4 };
     case 'SET_VAR':     return { id: uid('ev'), type, varId: '', value: 1 };
     case 'ADD_VAR':     return { id: uid('ev'), type, varId: '', delta: 1 };
+    // Store the result of a math expression, e.g. "$health - $defence".
+    case 'EXPR_SET':    return { id: uid('ev'), type, varId: '', expression: '' };
+    // The same store behind a picker: variable, operation, and a value that is
+    // a number, another variable, or a random number.
+    case 'MATH_FN':     return {
+      id: uid('ev'), type, varId: '', op: 'add',
+      srcKind: 'number', value: 1, srcVarId: '',
+    };
     case 'IF_VAR':      return { id: uid('ev'), type, varId: '', cmp: '==', value: 1, then: [], else: [] };
     case 'TONE':        return { id: uid('ev'), type, freq: 440, frames: 15 };
     case 'WAIT':        return { id: uid('ev'), type, frames: 30 };
@@ -609,6 +636,8 @@ export const EVENT_DEFS = [
   { type: 'SEED_RNG',     label: 'Seed Random Number Generator', group: 'Random' },
   { type: 'SET_VAR',      label: 'Set Variable',      group: 'Variables' },
   { type: 'ADD_VAR',      label: 'Add To Variable',   group: 'Variables' },
+  { type: 'MATH_FN',      label: 'Math Functions',    group: 'Variables' },
+  { type: 'EXPR_SET',     label: 'Evaluate Math Expression', group: 'Variables' },
   { type: 'IF_VAR',       label: 'If Variable…',      group: 'Variables' },
   { type: 'STORE_ACTOR_DIR', label: 'Store Actor Direction In Variable', group: 'Variables' },
   { type: 'STORE_ACTOR_POS', label: 'Store Actor Position In Variables', group: 'Variables' },

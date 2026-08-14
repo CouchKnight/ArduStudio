@@ -697,6 +697,16 @@ uint8_t refFacing(uint8_t ref, uint8_t self) {
   return idx < actorCount ? actors[idx].facing : 0;
 }
 
+// Narrow an arithmetic result to what a variable can hold. Intermediates are
+// int16, but a variable is a byte, so the store clamps rather than wrapping:
+// "health - defence" with more defence than health floors at 0 instead of
+// rolling round to 251. Mirrors clampByte() in js/emulator.js.
+uint8_t clampByte(int16_t v) {
+  if (v < 0) return 0;
+  if (v > 255) return 255;
+  return (uint8_t)v;
+}
+
 //#IF EXPR
 // Evaluate compiled expression bytes on a small integer stack. Mirrors
 // evalExpression() in js/expression.js exactly, including the int16 wrapping
@@ -1109,7 +1119,7 @@ void runScript(ScriptCtx& s) {
       case 4: { // ADD_VAR
         uint8_t v = codeAt(s.pc++);
         int8_t d = (int8_t)codeAt(s.pc++);
-        if (v < NUM_VARS) vars[v] += d;
+        if (v < NUM_VARS) vars[v] = clampByte((int16_t)vars[v] + d);
         break;
       }
       case 5: { // IF_VAR
@@ -1427,6 +1437,14 @@ void runScript(ScriptCtx& s) {
         break;
       }
       //#IF EXPR
+      case 53: { // EXPR_SET
+        uint8_t v = codeAt(s.pc++);
+        uint8_t len = codeAt(s.pc++);
+        int16_t value = evalExpression(s.pc, len);
+        s.pc += len;
+        if (v < NUM_VARS) vars[v] = clampByte(value);
+        break;
+      }
       case 40: { // EXPR_IF
         uint8_t len = codeAt(s.pc++);
         int16_t value = evalExpression(s.pc, len);

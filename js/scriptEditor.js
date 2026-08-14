@@ -5,6 +5,7 @@ import { el, clear } from './ui.js';
 import {
   makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS,
   DIRECTIONS, PROJECTILE_DIRS, ACTOR_SPEEDS, ACTOR_EFFECTS, COLLIDE_TARGETS,
+  MATH_OPS, MATH_SOURCES,
   SCENE_SCRIPT_SLOTS, ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS,
   cloneWithNewIds, retargetActorRefs,
 } from './model.js';
@@ -370,7 +371,105 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
     case 'ADD_VAR':
       fields.append(el('label', {}, 'Variable', varSelect('varId')));
       fields.append(el('label', {}, '+', numInput('delta', -128, 127)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Stops at 0 and 255 rather than wrapping round.'));
       break;
+    case 'EXPR_SET': {
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+      const input = el('input', {
+        type: 'text', value: ev.expression, spellcheck: false,
+        placeholder: 'e.g. $health - $defence',
+      });
+      const status = el('span', { class: 'hint', style: 'flex-basis:100%' });
+      // Same as-you-type checking the If / Loop expression fields get, so a
+      // typo is a warning here rather than a surprise at export.
+      const check = () => {
+        ev.expression = input.value;
+        const problem = expressionProblem(input.value, project);
+        input.classList.toggle('bad', !!problem);
+        status.textContent = problem
+          ? `⚠ ${problem}`
+          : 'The variable is set to whatever this works out to.';
+        status.classList.toggle('warn-text', !!problem);
+        changed();
+      };
+      input.addEventListener('input', check);
+      attachVariableAutocomplete(input, app, () => check());
+      fields.append(el('label', { style: 'flex:1 1 100%; position:relative' }, 'Expression', input));
+      fields.append(status);
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        '$name reads a variable · + - * / % · == != < > <= >= · && || ! · min, max, abs, rnd'));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Working out happens in whole numbers with room to spare, but the result is stored in a '
+        + 'byte — so anything below 0 lands on 0 and anything above 255 lands on 255.'));
+      check();
+      break;
+    }
+    case 'MATH_FN': {
+      // Sugar over the same evaluator Evaluate Math Expression uses, so the
+      // hint below shows exactly the expression this compiles to.
+      const preview = el('span', { class: 'hint', style: 'flex-basis:100%' });
+      const nameOf = (id) => {
+        const v = project.variables.find((x) => x.id === id);
+        return v ? `$${v.name}` : '(pick variable)';
+      };
+      const updatePreview = () => {
+        const opDef = MATH_OPS.find((o) => o.key === ev.op) || MATH_OPS[0];
+        const rhs = ev.srcKind === 'variable' ? nameOf(ev.srcVarId)
+          : ev.srcKind === 'random' ? `rnd(${ev.value | 0})`
+            : String(ev.value | 0);
+        const target = nameOf(ev.varId);
+        preview.textContent = opDef.key === 'set'
+          ? `Same as: ${target} = ${rhs}`
+          : `Same as: ${target} = ${target} ${opDef.symbol} ${rhs}`;
+      };
+
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+
+      const opSel = el('select', {
+        onchange: () => { ev.op = opSel.value; changed(); updatePreview(); },
+      });
+      for (const o of MATH_OPS) {
+        opSel.append(el('option', { value: o.key, selected: ev.op === o.key }, o.label));
+      }
+      fields.append(el('label', {}, 'Operation', opSel));
+
+      const srcSel = el('select', {
+        onchange: () => { ev.srcKind = srcSel.value; changed(); rerenderFields(); },
+      });
+      for (const o of MATH_SOURCES) {
+        srcSel.append(el('option', { value: o.key, selected: ev.srcKind === o.key }, o.label));
+      }
+      fields.append(el('label', {}, 'Value', srcSel));
+
+      // The value control depends on the source, so it lives in its own slot
+      // that gets rebuilt when the source changes.
+      const valueSlot = el('span', { class: 'form-slot' });
+      const rerenderFields = () => {
+        clear(valueSlot);
+        if (ev.srcKind === 'variable') {
+          valueSlot.append(varSelect('srcVarId'));
+        } else {
+          valueSlot.append(el('input', {
+            type: 'number', min: 0, max: 255, value: ev.value,
+            onchange: (e) => {
+              ev.value = Math.max(0, Math.min(255, parseInt(e.target.value, 10) || 0));
+              changed(); updatePreview();
+            },
+          }));
+          if (ev.srcKind === 'random') {
+            valueSlot.append(el('span', { class: 'hint' }, 'random from 0 up to this, not including it'));
+          }
+        }
+        updatePreview();
+      };
+      fields.append(el('label', {}, ev.srcKind === 'variable' ? 'From' : 'Amount', valueSlot));
+      fields.append(preview);
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'The result stops at 0 and 255 rather than wrapping, and dividing by zero gives 0.'));
+      rerenderFields();
+      break;
+    }
     case 'IF_VAR': {
       fields.append(el('label', {}, 'If', varSelect('varId')));
       const cmpSel = el('select', { onchange: () => { ev.cmp = cmpSel.value; changed(); } });
@@ -757,7 +856,8 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
         changed();
       };
       input.addEventListener('input', check);
-      fields.append(el('label', { style: 'flex:1 1 100%' }, 'Condition', input));
+      attachVariableAutocomplete(input, app, () => check());
+      fields.append(el('label', { style: 'flex:1 1 100%; position:relative' }, 'Condition', input));
       fields.append(status);
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
         '$name reads a variable · + - * / % · == != < > <= >= · && || ! · min, max, abs, rnd'));
