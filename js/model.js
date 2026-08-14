@@ -173,6 +173,48 @@ export function forEachEvent(events, fn) {
   }
 }
 
+// Event fields that name an actor: 'self', 'player', or a scene actor's id.
+export const ACTOR_REF_FIELDS = ['target', 'source', 'from'];
+
+// Deep-copy a list of events (or a whole actor) and give every id in it a fresh
+// one, so the copy is independent of the original. Used by copy/paste, where
+// two entities sharing an id would collide in collapse state and undo.
+export function cloneWithNewIds(node) {
+  const copy = JSON.parse(JSON.stringify(node));
+  const reid = (obj, prefix) => { if (obj && obj.id) obj.id = uid(prefix); };
+  if (Array.isArray(copy)) {
+    forEachEvent(copy, (ev) => reid(ev, 'ev'));
+  } else {
+    reid(copy, copy.scripts ? 'actor' : 'ev');
+    if (copy.scripts) {
+      for (const list of Object.values(copy.scripts)) forEachEvent(list, (ev) => reid(ev, 'ev'));
+    } else {
+      forEachEvent([copy], (ev) => reid(ev, 'ev'));
+    }
+  }
+  return copy;
+}
+
+// Point every actor reference in these events at something that exists in
+// `scene`, rewriting the ones that do not to 'self'. Pasting into a different
+// scene is the case that needs it: an id from the source scene means nothing
+// here, and left alone it would compile to a skipped event with only a warning
+// at export time. Returns how many were rewritten so the caller can say so.
+export function retargetActorRefs(events, scene) {
+  const known = new Set((scene ? scene.actors : []).map((a) => a.id));
+  let reset = 0;
+  forEachEvent(events, (ev) => {
+    for (const key of ACTOR_REF_FIELDS) {
+      const v = ev[key];
+      if (typeof v !== 'string' || v === 'self' || v === 'player' || v === '') continue;
+      if (known.has(v)) continue;
+      ev[key] = 'self';
+      reset++;
+    }
+  });
+  return reset;
+}
+
 // Fields whose contents can name a variable as "$name": the text drawn on
 // screen, and the two math-expression events.
 export const TEXT_FIELDS_WITH_VARS = ['text', 'expression', 'trueLabel', 'falseLabel'];
@@ -520,6 +562,12 @@ export function makeEvent(type) {
     case 'STORE_ACTOR_POS': return { id: uid('ev'), type, target: 'self', varX: '', varY: '' };
     case 'EXPR_IF':     return { id: uid('ev'), type, expression: '', then: [], else: [] };
     case 'EXPR_LOOP':   return { id: uid('ev'), type, expression: '', events: [] };
+    // Runs its body forever. Something inside has to end it — a Wait keeps the
+    // game responsive, and Stop Script or Change Scene break out entirely.
+    case 'LOOP':        return { id: uid('ev'), type, events: [] };
+    // Hands another script in this scene to the blocking VM and carries on.
+    // `target` is an actor id, a trigger id, or 'scene'.
+    case 'START_SCRIPT': return { id: uid('ev'), type, target: 'scene', slot: 'init' };
     case 'SEED_RNG':    return { id: uid('ev'), type };
     case 'SWITCH':      return {
       id: uid('ev'), type, varId: '',
@@ -592,6 +640,8 @@ export const EVENT_DEFS = [
   { type: 'IF_ACTOR_AT',  label: 'If Actor At Position', group: 'Control Flow' },
   { type: 'EXPR_IF',      label: 'If Math Expression', group: 'Control Flow' },
   { type: 'EXPR_LOOP',    label: 'Loop While Math Expression', group: 'Control Flow' },
+  { type: 'LOOP',         label: 'Loop',              group: 'Control Flow' },
+  { type: 'START_SCRIPT', label: 'Start Script',      group: 'Control Flow' },
   { type: 'SWITCH',       label: 'Switch',            group: 'Control Flow' },
   { type: 'IF_ACTOR_DISTANCE', label: 'If Actor Distance From Actor', group: 'Control Flow' },
   { type: 'COMMENT',      label: 'Comment',           group: 'Miscellaneous' },

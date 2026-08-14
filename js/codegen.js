@@ -1580,6 +1580,15 @@ void runScript(ScriptCtx& s) {
         break;
       }
 //#ENDIF
+      case 52: { // START_SCRIPT
+        uint16_t idx = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
+        uint8_t self = codeAt(s.pc++);
+        // Hand it to the blocking VM and keep going. The caller never waits,
+        // which is what lets an On Update script begin something that pauses.
+        queueScript(idx, self);
+        break;
+      }
       case 21: { // MENU
         menuVar = codeAt(s.pc++);
         menuCount = codeAt(s.pc++);

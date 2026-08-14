@@ -24,6 +24,9 @@ export function makeAllFeaturesProject() {
   sc.actors[0].scripts.interact = [
     ev('EXPR_IF', { expression: `$${v.name} > 0`, then: [ev('SEED_RNG', {})], else: [] }),
     ev('EXPR_LOOP', { expression: `$${v.name} > 250`, events: [ev('ADD_VAR', { varId: v.id, delta: 1 })] }),
+    // A Wait keeps this one honest — a Loop with no way out is a compiler warning.
+    ev('LOOP', { events: [ev('ADD_VAR', { varId: v.id, delta: 1 }), ev('WAIT', { frames: 1 }), ev('END_SCRIPT', {})] }),
+    ev('START_SCRIPT', { target: target.id, slot: 'hit' }),
     ev('SWITCH', {
       varId: v.id,
       cases: [{ value: 0, events: [ev('SET_VAR', { varId: v.id, value: 2 })] }],
