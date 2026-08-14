@@ -71,7 +71,8 @@ optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add
 of the default action), `Remove Button Script`, `Pause Script Until Input Pressed`,
 `If Joypad Input Held`, `If Actor At Position`, `If Actor Distance From Actor`,
 `Store Actor Direction In Variable`, `Store Actor Position In Variables`,
-`Comment`, `Event Group`, `If Math Expression`, `Loop While Math Expression`, `Switch`,
+`Comment`, `Event Group`, `If Math Expression`, `Loop While Math Expression`, `Loop`,
+`Start Script`, `Switch`,
 `Seed Random Number Generator`, `Set Actor Animation Frame / Speed / State`,
 `Show / Hide Overlay`, `Overlay Move To`, `Set Overlay Scanline Cutoff`, `Draw Text`,
 `Push / Pop / Pop All Scenes`, `Fade In / Out`, `Play Tone`,
@@ -85,6 +86,19 @@ could. That is how you do a sword swing (swap the player's sprite, wait, swap ba
 damage flash. Hiding the player is visual only — it keeps moving and still fires triggers.
 `Set Actor Movement Speed` and `Move Actor` stay actor-only: the player walks tile-by-tile
 rather than at a pixel speed, and `Teleport Player` already covers moving it.
+
+**Loop** repeats its events forever, so something inside must end it — a `Wait` to stay
+responsive, or `Stop Script` / `Change Scene` to break out. A loop with none of those never
+hands the console back, and the exporter warns you rather than letting the game freeze.
+
+**Start Script** runs another script in the same scene and carries straight on. That is what
+`On Update` needs: it must finish inside its frame, so it cannot show dialogue or wait — but it
+can *start* a script that does. Inside the started script, `Self` means the actor that owns it.
+
+**Copy/paste** works on events (⧉ / ⎘ on any block, carrying everything nested inside) and on
+whole actors, sprite and all four scripts included — so a second monster is a paste, not a
+re-entry. Copies go through the system clipboard, so they cross scenes, tabs and projects.
+References that do not fit the destination are repaired and reported, not left broken.
 
 ### Script lifecycle
 
@@ -188,8 +202,8 @@ usable flash and 2,560 bytes of RAM:
 
 | Project | Flash | RAM |
 |---|---|---|
-| Key Quest demo | 23,372 | 1,949 |
-| Every subsystem at once | 26,934 | 2,047 |
+| Key Quest demo | 23,424 | 1,949 |
+| Every subsystem at once | 26,994 | 2,047 |
 
 The optional subsystems come to about 3.4 KB of flash in total, so a game reaching for all of
 them has roughly 1.9 KB left for its own scenes and art.

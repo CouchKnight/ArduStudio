@@ -5,7 +5,10 @@ import { el, clear } from './ui.js';
 import {
   makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS,
   DIRECTIONS, PROJECTILE_DIRS, ACTOR_SPEEDS, ACTOR_EFFECTS, COLLIDE_TARGETS,
+  SCENE_SCRIPT_SLOTS, ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS,
+  cloneWithNewIds, retargetActorRefs,
 } from './model.js';
+import { writeClip, readClip } from './clipboard.js';
 import {
   MAX_ACTOR_DISTANCE, ANIM_SPEEDS, OVERLAY_SPEEDS, MAX_SWITCH_CASES,
 } from './compiler.js';
@@ -198,12 +201,39 @@ export function renderScriptEditor(app, scene, events, onChange, owner = null) {
     root.append(renderEventCard(app, scene, events, i, rerender, owner));
   });
 
-  root.append(el('div', { class: 'add-event-row' }, addEventSelect((ev) => {
-    events.push(ev);
-    rerender();
-  })));
+  root.append(el('div', { class: 'add-event-row' },
+    addEventSelect((ev) => {
+      events.push(ev);
+      rerender();
+    }),
+    // Also at list level, so an empty slot can be pasted into — there is no
+    // event card to hang a paste button off when the list is empty.
+    el('button', {
+      class: 'mini', title: 'Paste event(s) here',
+      onclick: () => pasteEventsInto(app, scene, events, events.length, rerender),
+    }, '⎘'),
+  ));
 
   return root;
+}
+
+// Paste copied events into `list` at `at`. Ids are regenerated so the copies
+// are independent, and any actor reference that means nothing in this scene is
+// pointed back at Self rather than left to fail quietly at export.
+async function pasteEventsInto(app, scene, list, at, rerender) {
+  const data = await readClip('events');
+  if (!data || !Array.isArray(data) || !data.length) {
+    alert('Nothing to paste. Copy an event with ⧉ first.');
+    return;
+  }
+  const copy = cloneWithNewIds(data);
+  const reset = retargetActorRefs(copy, scene);
+  list.splice(at, 0, ...copy);
+  rerender();
+  if (reset) {
+    alert(`Pasted. ${reset} actor reference${reset === 1 ? '' : 's'} pointed at an actor `
+      + 'that is not in this scene, so they were reset to Self.');
+  }
 }
 
 function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
@@ -230,6 +260,19 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       class: 'mini', title: 'Move down',
       onclick: () => { if (index < list.length - 1) { [list[index + 1], list[index]] = [list[index], list[index + 1]]; rerender(); } },
     }, '↓'),
+    el('button', {
+      // An Event Group or an If carries its children, since those are just
+      // nested lists on the event.
+      class: 'mini', title: 'Copy event',
+      onclick: async () => {
+        await writeClip('events', [ev]);
+        rerender();
+      },
+    }, '⧉'),
+    el('button', {
+      class: 'mini', title: 'Paste event(s) below',
+      onclick: () => pasteEventsInto(app, scene, list, index + 1, rerender),
+    }, '⎘'),
     el('button', {
       class: 'mini', title: 'Delete event',
       onclick: () => { list.splice(index, 1); rerender(); },
@@ -730,6 +773,58 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
         card.append(el('div', { class: 'event-branch-label' }, 'False'));
         card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
       }
+      break;
+    }
+    case 'LOOP': {
+      card.append(renderScriptEditor(app, scene, ev.events, app.save, ownerActor));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Repeats forever. Something inside has to end it — a Wait keeps the game responsive, '
+        + 'and Stop Script or Change Scene break out. Without one of those the script freezes here, '
+        + 'and the exporter will tell you so.'));
+      break;
+    }
+    case 'START_SCRIPT': {
+      // Every script slot in this scene, as "Entity → Slot". Scripts are
+      // compiled per scene and their actor references are scene-relative, so
+      // there is deliberately nothing here from other scenes.
+      const sel = el('select', {
+        onchange: () => {
+          const [target, slot] = sel.value.split('|');
+          ev.target = target; ev.slot = slot;
+          changed();
+        },
+      });
+      const current = `${ev.target}|${ev.slot}`;
+      let found = false;
+      const addOpt = (target, slot, label, filled) => {
+        const value = `${target}|${slot}`;
+        if (value === current) found = true;
+        sel.append(el('option', { value, selected: value === current },
+          filled ? label : `${label} (empty)`));
+      };
+      if (scene) {
+        for (const { key, label } of SCENE_SCRIPT_SLOTS) {
+          addOpt('scene', key, `Scene → ${label}`, (scene.scripts[key] || []).length);
+        }
+        for (const a of scene.actors) {
+          for (const { key, label } of ACTOR_SCRIPT_SLOTS) {
+            addOpt(a.id, key, `${a.name} → ${label}`, (a.scripts[key] || []).length);
+          }
+        }
+        for (const t of scene.triggers) {
+          for (const { key, label } of TRIGGER_SCRIPT_SLOTS) {
+            addOpt(t.id, key, `${t.name} → ${label}`, (t.scripts[key] || []).length);
+          }
+        }
+      }
+      if (!found) {
+        sel.prepend(el('option', { value: current, selected: true }, '(missing script)'));
+      }
+      fields.append(el('label', { style: 'flex:1 1 100%' }, 'Script', sel));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Starts that script and carries straight on without waiting for it. This is the one way '
+        + 'an On Update script can begin something that pauses — dialogue, a wait, a fade. '
+        + 'Inside the started script, Self means the actor it belongs to.'));
       break;
     }
     case 'SEED_RNG':

@@ -9,8 +9,10 @@ import {
   MAX_ACTORS_PER_SCENE, MAX_TRIGGERS_PER_SCENE,
   DIRECTIONS, ACTOR_SPEEDS, COLLISION_GROUPS, COLLIDE_TARGETS,
   SCENE_SCRIPT_SLOTS, ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS,
+  cloneWithNewIds, retargetActorRefs,
 } from './model.js';
 import { renderScriptEditor } from './scriptEditor.js';
+import { writeClip, readClip } from './clipboard.js';
 
 // Canvas pixels per game pixel. Larger (scrolling) scenes zoom out so the
 // whole map stays visible in the editor.
@@ -342,6 +344,41 @@ export function initSceneEditor(app) {
     return c;
   }
 
+  // Drop a copied actor into `sc`. Ids are regenerated, the position is nudged
+  // so it does not hide under the original, the name is made unique, and any
+  // reference that means nothing here — an actor from another scene, a sprite
+  // from another project — is repaired rather than left to fail at export.
+  async function pasteActor(sc) {
+    const data = await readClip('actor');
+    if (!data || !data.scripts) { flash('Nothing to paste — copy an actor first'); return; }
+    if (sc.actors.length >= MAX_ACTORS_PER_SCENE) { flash(`Max ${MAX_ACTORS_PER_SCENE} actors per scene`); return; }
+
+    const copy = cloneWithNewIds(data);
+    let reset = 0;
+    for (const list of Object.values(copy.scripts)) reset += retargetActorRefs(list, sc);
+
+    let note = '';
+    if (!spriteById(app.project, copy.spriteId)) {
+      copy.spriteId = app.project.sprites[0] ? app.project.sprites[0].id : '';
+      note = ', sprite reset';
+    }
+
+    const taken = new Set(sc.actors.map((x) => x.name));
+    if (taken.has(copy.name)) {
+      let n = 2;
+      while (taken.has(`${copy.name} ${n}`)) n++;
+      copy.name = `${copy.name} ${n}`;
+    }
+    copy.x = Math.min(copy.x + 1, sceneCols(sc) - 1);
+    copy.y = Math.min(copy.y + 1, sceneRows(sc) - 1);
+
+    sc.actors.push(copy);
+    st.selected = { kind: 'actor', id: copy.id };
+    app.save();
+    refresh();
+    flash(`Pasted "${copy.name}"${reset ? `, ${reset} actor ref${reset === 1 ? '' : 's'} reset to Self` : ''}${note}`);
+  }
+
   function renderInspector() {
     const box = clear(document.getElementById('inspector'));
     const sc = scene();
@@ -413,6 +450,17 @@ export function initSceneEditor(app) {
 
       box.append(el('div', { class: 'panel-title' }, 'Scripts'));
       box.append(scriptTabs(a, ACTOR_SCRIPT_SLOTS, sc));
+      // Copy carries the actor's whole configuration and all four scripts —
+      // the point being a second monster without re-entering any of it.
+      const actorTools = el('div', { class: 'form-row', style: 'margin-top:8px' },
+        el('button', {
+          class: 'btn', onclick: async () => { await writeClip('actor', a); },
+        }, 'Copy actor'),
+        el('button', {
+          class: 'btn', onclick: () => pasteActor(sc),
+        }, 'Paste actor'),
+      );
+      box.append(actorTools);
       box.append(el('button', {
         class: 'btn danger', style: 'margin-top:8px',
         onclick: () => {
@@ -462,6 +510,12 @@ export function initSceneEditor(app) {
       type: 'text', value: sc.name,
       onchange: (e) => { sc.name = e.target.value; app.save(); refresh(); },
     })));
+    // Paste is reachable with nothing selected too, so a copied actor can land
+    // in an empty scene without placing a throwaway actor first.
+    box.append(el('button', {
+      class: 'btn', style: 'margin-bottom:8px',
+      onclick: () => pasteActor(sc),
+    }, 'Paste actor'));
     // Scene size in screens. A 1x1 scene is a single Arduboy screen (Bitsy
     // style); anything larger scrolls to follow the player.
     const sizeRow = el('div', { class: 'form-row' });

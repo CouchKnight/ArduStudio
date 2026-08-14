@@ -1131,6 +1131,14 @@ export class Emulator {
           else if (this.drawnText.length < MAX_DRAWN_TEXT) this.drawnText.push({ strIdx, x, y, location });
           break;
         }
+        case OP.START_SCRIPT: {
+          const idx = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          const self = code[s.pc++];
+          // Hand it to the blocking VM and keep going. The caller never waits,
+          // which is what lets an On Update script begin something that pauses.
+          this.queueScript(idx, self);
+          break;
+        }
         case OP.MENU: {
           const varIdx = code[s.pc++];
           const count = code[s.pc++];

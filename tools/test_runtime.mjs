@@ -8,7 +8,7 @@
 import {
   makeDemoProject, makeEvent as makeEventOfType, normalizeProject,
   makeActor as makeActorOfType, makeSpriteState as makeSpriteStateOfType,
-  renameVariableReferences,
+  renameVariableReferences, cloneWithNewIds, retargetActorRefs, forEachEvent,
 } from '../js/model.js';
 import { compileProject, TEXT_VAR_MARKER, displayWidth } from '../js/compiler.js';
 import { generateIno } from '../js/codegen.js';
@@ -1678,6 +1678,177 @@ console.log('— help tab —');
   assert(html.includes('$name'), 'help documents the bare $name form');
   assert(html.includes('${name}'), 'help documents the braced ${name} form literally');
   assert(html.includes('${gold}coins'), 'help shows the ${gold}coins disambiguation example');
+}
+
+console.log('— Start Script —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+
+  {
+    // The whole point: a per-frame script beginning something that pauses.
+    const proj = makeDemoProject();
+    proj.scenes[0].scripts.init = [];
+    const target = proj.scenes[0].actors[0];
+    target.scripts.interact = [ev('TEXT', { text: 'from update' })];
+    target.scripts.update = [ev('START_SCRIPT', { target: target.id, slot: 'interact' })];
+    const c = compileProject(proj);
+    assert(c.warnings.length === 0, `Start Script in On Update compiles clean (${c.warnings.join('; ') || 'none'})`);
+    const e = new Emulator(c, { onTone: () => {} });
+    for (let i = 0; i < 4; i++) { e.setButtons(0); e.step(); }
+    assert(!!e.text, 'On Update started a dialogue that On Update itself could never run');
+  }
+
+  {
+    // Self inside the started script must mean the script's own actor, not
+    // whoever started it — otherwise Hide Actor would hide the wrong one.
+    const proj = makeDemoProject();
+    proj.scenes[0].scripts.init = [];
+    const a0 = proj.scenes[0].actors[0];
+    const a1 = makeActorOfType('Target', proj.sprites[2].id, 6, 3);
+    a1.scripts.interact = [ev('ACTOR_HIDE', { target: 'self' })];
+    proj.scenes[0].actors.push(a1);
+    a0.scripts.update = [ev('START_SCRIPT', { target: a1.id, slot: 'interact' })];
+    const e = new Emulator(compileProject(proj), { onTone: () => {} });
+    for (let i = 0; i < 6; i++) { e.setButtons(0); e.step(); }
+    assert(e.actors[1].hidden && !e.actors[0].hidden,
+      `the started script's Self is its own actor (a0.hidden=${e.actors[0].hidden}, a1.hidden=${e.actors[1].hidden})`);
+  }
+
+  {
+    // A start that names an empty slot or an entity in another scene is a
+    // warning and no opcode, never a silently wrong jump.
+    const proj = makeDemoProject();
+    proj.scenes[0].scripts.init = [
+      ev('START_SCRIPT', { target: proj.scenes[0].actors[0].id, slot: 'hit' }), // empty slot
+      ev('START_SCRIPT', { target: proj.scenes[1].actors[0].id, slot: 'interact' }), // other scene
+    ];
+    const c = compileProject(proj);
+    assert(c.warnings.filter((w) => w.includes('Start Script')).length === 2,
+      `both bad Start Scripts warned (${c.warnings.filter((w) => w.includes('Start Script')).join('; ')})`);
+  }
+
+  {
+    // Overflowing the queue drops the extra rather than corrupting the VM.
+    // Fired from a blocking script, so the VM is busy and every start after the
+    // first has to queue — On Update could not do this, because runScript()
+    // pauses every context while a dialogue is open.
+    const proj = makeDemoProject();
+    const a0 = proj.scenes[0].actors[0];
+    a0.scripts.interact = [ev('TEXT', { text: 'busy' })];
+    proj.scenes[0].scripts.init = Array.from({ length: 12 },
+      () => ev('START_SCRIPT', { target: a0.id, slot: 'interact' }));
+    const e = new Emulator(compileProject(proj), { onTone: () => {} });
+    for (let i = 0; i < 4; i++) { e.setButtons(0); e.step(); }
+    // 12 starts, 8 accepted and 4 dropped; then the init script ends and the VM
+    // pulls one off to run, leaving 7 waiting.
+    assert(e.scriptQueue.length === 7, `queue capped and dropped the rest (${e.scriptQueue.length} waiting, expected 7)`);
+    assert(!!e.text, 'and the VM is still running the first one, not wedged');
+  }
+}
+
+console.log('— Loop —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+
+  {
+    // A loop with a Wait yields, so the counter climbs one step at a time
+    // instead of burning the whole instruction budget in one frame.
+    const proj = makeDemoProject();
+    const v = proj.variables[0].id;
+    proj.scenes[0].scripts.init = [
+      ev('LOOP', { events: [ev('ADD_VAR', { varId: v, delta: 1 }), ev('WAIT', { frames: 2 })] }),
+    ];
+    const c = compileProject(proj);
+    assert(c.warnings.length === 0, `a Loop containing a Wait compiles clean (${c.warnings.join('; ') || 'none'})`);
+    const e = new Emulator(c, { onTone: () => {} });
+    for (let i = 0; i < 12; i++) { e.setButtons(0); e.step(); }
+    const n = e.vars[0];
+    assert(n > 1 && n < 12, `the loop repeated but yielded between iterations (${n} times in 12 frames)`);
+    assert(e.script.active, 'and it is still looping — nothing broke out');
+  }
+
+  {
+    // Provably stuck: nothing in the body pauses or ends the script.
+    const proj = makeDemoProject();
+    const v = proj.variables[0].id;
+    proj.scenes[0].scripts.init = [
+      ev('LOOP', { events: [ev('ADD_VAR', { varId: v, delta: 1 })] }),
+    ];
+    const c = compileProject(proj);
+    assert(c.warnings.some((w) => /Loop never finishes/.test(w)),
+      `a Loop with no way out warns (${c.warnings.join('; ') || 'no warnings'})`);
+  }
+
+  {
+    // Stop Script counts as a way out, so this must NOT warn.
+    const proj = makeDemoProject();
+    const v = proj.variables[0].id;
+    proj.scenes[0].scripts.init = [
+      ev('LOOP', {
+        events: [
+          Object.assign(makeEventOfType('IF_VAR'), {
+            varId: v, cmp: '>', value: 3, then: [makeEventOfType('END_SCRIPT')], else: [],
+          }),
+          ev('ADD_VAR', { varId: v, delta: 1 }),
+        ],
+      }),
+    ];
+    const c = compileProject(proj);
+    assert(!c.warnings.some((w) => /Loop never finishes/.test(w)),
+      'a Loop broken by Stop Script does not warn');
+    const e = new Emulator(c, { onTone: () => {} });
+    for (let i = 0; i < 5; i++) { e.setButtons(0); e.step(); }
+    assert(e.vars[0] === 4, `and it actually exits (counter stopped at ${e.vars[0]})`);
+  }
+
+  {
+    // Loop is blocking, so On Update refuses it like the other pausing events.
+    const proj = makeDemoProject();
+    proj.scenes[0].scripts.init = [];
+    proj.scenes[0].actors[0].scripts.update = [ev('LOOP', { events: [makeEventOfType('SEED_RNG')] })];
+    const c = compileProject(proj);
+    assert(c.warnings.some((w) => w.includes('On Update')), 'Loop is refused in an On Update slot');
+  }
+}
+
+console.log('— copy/paste helpers —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+
+  {
+    // Every id must be fresh, including deep inside branches and switch cases.
+    const src = [
+      Object.assign(makeEventOfType('IF_VAR'), {
+        then: [makeEventOfType('SEED_RNG')],
+        else: [Object.assign(makeEventOfType('EVENT_GROUP'), { events: [makeEventOfType('WAIT')] })],
+      }),
+      Object.assign(makeEventOfType('SWITCH'), {
+        cases: [{ value: 0, events: [makeEventOfType('STOP_SONG')] }], else: [],
+      }),
+    ];
+    const copy = cloneWithNewIds(src);
+    const ids = (list) => { const out = []; forEachEvent(list, (e) => out.push(e.id)); return out; };
+    const srcIds = new Set(ids(src));
+    const copyIds = ids(copy);
+    assert(copyIds.length === srcIds.size, `clone kept every event (${copyIds.length})`);
+    assert(copyIds.every((id) => !srcIds.has(id)), 'no id is shared with the original, at any depth');
+  }
+
+  {
+    // Pasting into another scene must not leave references to actors that are
+    // not there — they would compile to skipped events with only a warning.
+    const proj = makeDemoProject();
+    const foreign = proj.scenes[1].actors[0].id;
+    const list = [
+      ev('ACTOR_HIDE', { target: foreign }),
+      ev('ACTOR_SHOW', { target: 'player' }),
+      ev('ACTOR_MOVE', { target: 'self' }),
+    ];
+    const reset = retargetActorRefs(list, proj.scenes[0]);
+    assert(reset === 1, `only the unreachable reference was rewritten (${reset})`);
+    assert(list[0].target === 'self', 'the foreign actor became Self');
+    assert(list[1].target === 'player' && list[2].target === 'self', 'player and self were left alone');
+  }
 }
 
 console.log('— bytecode sanity —');

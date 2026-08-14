@@ -335,6 +335,43 @@ just leaves a little space; a line can never overrun the box.</p>
 <p>Every event block collapses with the <b>▾</b> button in its corner, which is how you keep
 a long script navigable.</p>
 
+<h2>Copying and pasting</h2>
+<p>Building a second monster does not mean re-entering its whole script.</p>
+<ul>
+  <li><b>Events</b> — <b>⧉</b> on any event block copies it, and <b>⎘</b> pastes below. An
+      <i>Event Group</i> or an <i>If</i> carries everything nested inside it, so one copy takes
+      a whole branch. There is also a <b>⎘</b> beside <i>+ Add Event</i>, for pasting into a
+      script slot that is still empty.</li>
+  <li><b>Actors</b> — <b>Copy actor</b> / <b>Paste actor</b> in the actor inspector take the
+      whole thing: sprite, movement, collision settings and all four scripts. The copy lands
+      one tile along with a numbered name so it is not hiding under the original.</li>
+</ul>
+<p>Copies go to the system clipboard, so they survive a reload and can cross scenes, browser
+tabs and even projects.</p>
+<p class="hint">Pasting somewhere the copy does not quite fit is repaired rather than left
+broken: an event pointing at an actor that is not in this scene is reset to <i>Self</i>, and an
+actor whose sprite does not exist in this project falls back to the first sprite. Either way
+you are told what changed.</p>
+
+<h2>Loops and starting other scripts</h2>
+<ul>
+  <li><b>Loop</b> — repeats its events forever. Something inside has to end it: a <b>Wait</b>
+      keeps the game responsive between passes, and <b>Stop Script</b> or <b>Change Scene</b>
+      break out entirely. A loop with none of those never hands the console back, so the game
+      freezes there — the exporter checks for exactly that and warns you.</li>
+  <li><b>Loop While Math Expression</b> — the same thing with a condition, so it ends on its own.</li>
+  <li><b>Start Script</b> — runs another script in this scene and carries straight on without
+      waiting for it.</li>
+</ul>
+<p><b>Start Script</b> is what an <b>On Update</b> script needs. On Update has to finish inside
+its frame, so it cannot show dialogue, wait or fade — but it <i>can</i> start a script that does.
+"When the player gets close, say something" is an On Update that checks the distance and starts
+the actor's <i>On Interact</i>.</p>
+<p>It picks from the script slots in the current scene only, because a script's actor references
+are numbered relative to the scene it lives in. Inside the started script, <b>Self</b> means the
+actor that owns it — not whoever started it. If the VM is busy the script queues behind what is
+running (8 deep, then further starts are dropped).</p>
+
 <h2>Variables</h2>
 <p>The <b>Variables</b> tab is the single place to manage all 32 byte variables. Each row shows every
 script that reads or writes it, so you can tell at a glance what a variable does — and what deleting

@@ -5,7 +5,7 @@
 
 import {
   SCENE_W, SCENE_H, MAX_VARIABLES,
-  sceneCols, sceneRows, buttonIndex,
+  sceneCols, sceneRows, buttonIndex, forEachEvent,
   pixelsToBytes, sceneById, spriteById,
   ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS, SCENE_SCRIPT_SLOTS, NON_BLOCKING_SLOTS,
   directionCode, effectCode, collisionGroupCode,
@@ -68,6 +68,7 @@ export const OP = {
   OVERLAY_MOVE: 49, // x, y, speed
   OVERLAY_CUTOFF: 50, // y scanline
   DRAW_TEXT: 51,    // strIdx, x, y, location (0 = background, 1 = overlay)
+  START_SCRIPT: 52, // scriptIdxLo, scriptIdxHi, selfIdx (0xFF = none)
 };
 
 // Animation speed: frames between animation steps. 0 freezes the actor.
@@ -111,8 +112,24 @@ export const BLOCKING_EVENTS = new Set([
   'POP_ALL_SCENES', 'FADE_IN', 'FADE_OUT', 'OVERLAY_MOVE',
   // A loop runs until its condition goes false, which it cannot do inside a
   // slot that has to finish in one frame.
-  'EXPR_LOOP',
+  'EXPR_LOOP', 'LOOP',
 ]);
+
+// Events that end a script outright, so a Loop containing one can still be
+// escaped. Change Scene counts because it abandons the running script.
+const LOOP_ESCAPES = new Set(['END_SCRIPT', 'SWITCH_SCENE']);
+
+// True when this event list can never hand the VM back: no event that pauses,
+// and no event that ends the script. The blocking VM keeps its program counter
+// between frames, so such a loop owns it forever and everything else queues up
+// behind it — the classic "the player is stuck" freeze, provable up front.
+function neverYields(events) {
+  let escapes = false;
+  forEachEvent(events, (ev) => {
+    if (BLOCKING_EVENTS.has(ev.type) || LOOP_ESCAPES.has(ev.type)) escapes = true;
+  });
+  return !escapes;
+}
 
 // The launcher of a projectile, when it is not an actor in the scene.
 export const PROJECTILE_SRC_SELF = 0xff;
@@ -674,6 +691,20 @@ export function compileProject(project) {
           patchU16(code, endPatch, code.length);
           break;
         }
+        case 'LOOP': {
+          if (!ev.events || !ev.events.length) {
+            warnings.push(`${ctx}: Loop is empty — skipped`);
+            break;
+          }
+          if (neverYields(ev.events)) {
+            warnings.push(`${ctx}: Loop never finishes — nothing in it pauses or stops the script, so the game will freeze here. Add a Wait, or a Stop Script / Change Scene to break out.`);
+          }
+          const top = code.length;
+          compileEvents(ev.events, scene, ctx, nonBlocking);
+          emit(OP.JUMP);
+          emitU16(top);
+          break;
+        }
         case 'SEED_RNG':
           emit(OP.SEED_RNG);
           break;
@@ -764,6 +795,24 @@ export function compileProject(project) {
         case 'COMMENT':
           break;
         // Purely organisational — its children compile straight into the parent.
+        case 'START_SCRIPT': {
+          // Hands the target to the blocking VM and carries straight on, which
+          // is what makes it legal in On Update — the one way a per-frame script
+          // can begin something that pauses.
+          const ref = scene ? scriptRefs.get(scriptRefKey(scene.id, ev.target, ev.slot)) : null;
+          if (!ref) {
+            warnings.push(`${ctx}: Start Script names a script that is not in this scene — skipped`);
+            break;
+          }
+          if (ref.idx === NO_SCRIPT) {
+            warnings.push(`${ctx}: Start Script points at an empty script — skipped`);
+            break;
+          }
+          emit(OP.START_SCRIPT);
+          emitU16(ref.idx);
+          emit(ref.self);
+          break;
+        }
         case 'EVENT_GROUP':
           compileEvents(ev.events, scene, ctx, nonBlocking);
           break;
@@ -802,12 +851,24 @@ export function compileProject(project) {
     ownerActor = null;
   }
 
+  // Every slot Start Script can name, keyed by scene + entity + slot. Filled in
+  // as the scene walk reserves indices, which all happens before drainScripts()
+  // compiles a single body — so a Start Script can point at any slot in its
+  // scene, including one belonging to an entity defined after it.
+  const scriptRefs = new Map(); // "sceneId|entityId|slot" -> { idx, self }
+  const scriptRefKey = (sceneId, entityId, slot) => `${sceneId}|${entityId}|${slot}`;
+
   // Register every lifecycle slot of one entity, returning { slotKey: index }.
-  function addSlots(entity, slots, scene, what, owner = null) {
+  // `refId`/`selfIdx` record how a Start Script would reach these slots: an
+  // actor's script runs with that actor as Self, everything else with none.
+  function addSlots(entity, slots, scene, what, owner = null, refId = null, selfIdx = ACTOR_REF_SELF) {
     const out = {};
     for (const { key, label } of slots) {
       out[key] = addScript(entity.scripts[key], scene, `${what} ${label}`,
         NON_BLOCKING_SLOTS.includes(key), owner);
+      if (refId !== null) {
+        scriptRefs.set(scriptRefKey(scene.id, refId, key), { idx: out[key], self: selfIdx });
+      }
     }
     return out;
   }
@@ -815,12 +876,12 @@ export function compileProject(project) {
   const scenes = project.scenes.map((scene, si) => {
     const cw = sceneCols(scene), ch = sceneRows(scene);
     const where = `in "${scene.name}"`;
-    const sceneSlots = addSlots(scene, SCENE_SCRIPT_SLOTS, scene, `Scene "${scene.name}"`);
-    const actors = scene.actors.map((a) => {
+    const sceneSlots = addSlots(scene, SCENE_SCRIPT_SLOTS, scene, `Scene "${scene.name}"`, null, 'scene');
+    const actors = scene.actors.map((a, ai) => {
       const sprite = spriteById(project, a.spriteId);
       let spriteIdx = project.sprites.indexOf(sprite);
       if (spriteIdx < 0) { warnings.push(`Actor "${a.name}" ${where} has no sprite — using sprite 0`); spriteIdx = 0; }
-      const slots = addSlots(a, ACTOR_SCRIPT_SLOTS, scene, `Actor "${a.name}" ${where}`, a);
+      const slots = addSlots(a, ACTOR_SCRIPT_SLOTS, scene, `Actor "${a.name}" ${where}`, a, a.id, ai);
       const group = collisionGroupCode(a.collisionGroup);
       if (!group && a.collideWith) {
         warnings.push(`Actor "${a.name}" ${where} collides with something but is in no collision group — it can still be hit, but nothing can be hit by it`);
@@ -845,7 +906,7 @@ export function compileProject(project) {
       y: clampTile(t.y, ch),
       w: Math.max(1, Math.min(cw, t.w | 0)),
       h: Math.max(1, Math.min(ch, t.h | 0)),
-      scripts: addSlots(t, TRIGGER_SCRIPT_SLOTS, scene, `Trigger "${t.name}" ${where}`),
+      scripts: addSlots(t, TRIGGER_SCRIPT_SLOTS, scene, `Trigger "${t.name}" ${where}`, null, t.id),
     }));
     return {
       name: scene.name, index: si, cols: cw, rows: ch,
