@@ -15,6 +15,14 @@ import { generateIno } from '../js/codegen.js';
 import { compileExpression, evalExpression } from '../js/expression.js';
 import { makeAllFeaturesProject } from './all_features_project.mjs';
 import { Emulator, BTN, memoryStorage } from '../js/emulator.js';
+import { readZip, crc32 } from '../js/zip.js';
+import {
+  ARDUBOY_GENRES, buildArduboyPackage, buildInfoJson, packageProblem,
+  renderBanner, validateHex,
+} from '../js/arduboyPackage.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Tap a button for one frame, then release it — justPressed only fires on the
 // frame a button goes down.
@@ -1986,6 +1994,134 @@ console.log('— math into a variable —');
     ];
     const c = compileProject(proj);
     assert(c.warnings.length >= 2, `both missing-variable cases warn (${c.warnings.join('; ')})`);
+  }
+}
+
+console.log('— .arduboy package —');
+{
+  // Build an Intel HEX record with a correct checksum, so the tests below can
+  // corrupt one deliberately rather than depending on hand arithmetic.
+  const hexRecord = (addr, type, data) => {
+    const raw = [data.length, (addr >> 8) & 0xff, addr & 0xff, type, ...data];
+    const sum = raw.reduce((n, b) => n + b, 0);
+    return ':' + [...raw, (~sum + 1) & 0xff].map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join('');
+  };
+  const DATA = [0x0c, 0x94, 0x35, 0x00, 0x0c, 0x94, 0x3f, 0x00];
+  const GOOD_HEX = `${hexRecord(0, 0, DATA)}\n${hexRecord(0, 1, [])}\n`;
+
+  const ready = (p) => {
+    p.author = p.author || 'Tester';
+    p.settings.version = '1.0';
+    return p;
+  };
+
+  {
+    const proj = ready(makeDemoProject());
+    const compiled = compileProject(proj);
+    const banner = renderBanner(compiled, Emulator);
+    const bytes = buildArduboyPackage({ project: proj, compiled, hex: GOOD_HEX, banner });
+
+    // Read the archive back rather than trusting the writer.
+    const entries = readZip(bytes);
+    const names = entries.map((e) => e.name);
+    assert(names.includes('info.json'), `archive holds info.json (${names.join(', ')})`);
+    assert(names.includes('banner.png'), 'archive holds banner.png');
+    assert(entries.every((e) => crc32(e.data) === e.crc), 'every entry’s stored CRC-32 matches its bytes');
+
+    const info = JSON.parse(new TextDecoder().decode(entries.find((e) => e.name === 'info.json').data));
+    // The five the schema marks required, none of them blank.
+    assert(info.schemaVersion === 2, `schemaVersion is 2 (got ${info.schemaVersion})`);
+    for (const key of ['title', 'author', 'version']) {
+      assert(typeof info[key] === 'string' && info[key].length >= 1, `${key} is a non-empty string ("${info[key]}")`);
+    }
+    assert(Array.isArray(info.binaries) && info.binaries.length >= 1, 'binaries has at least one entry');
+    assert(info.binaries[0].device === 'Arduboy', `device is one of the enum's two values (got ${info.binaries[0].device})`);
+    assert(ARDUBOY_GENRES.includes(info.genre), `genre is from the schema's enum (got ${info.genre})`);
+    assert(/^\d{4}-\d{2}-\d{2}$/.test(info.date), `date is ISO 8601 (got ${info.date})`);
+    // The binary it advertises has to actually be in the archive.
+    assert(names.includes(info.binaries[0].filename),
+      `the .hex named in binaries[0] is present (${info.binaries[0].filename})`);
+  }
+
+  {
+    // EEPROM is only claimed by a game that actually saves, since the range
+    // tells a loader which bytes to back up.
+    const plain = ready(makeDemoProject());
+    const noSaves = buildInfoJson(plain, compileProject(plain), { hexFilename: 'a.hex' });
+    assert(noSaves.eeprom === undefined, 'a game without save events declares no eeprom range');
+
+    const saving = ready(makeDemoProject());
+    saving.scenes[0].scripts.init = [makeEventOfType('SAVE_GAME')];
+    const withSaves = buildInfoJson(saving, compileProject(saving), { hexFilename: 'a.hex' });
+    assert(withSaves.eeprom && withSaves.eeprom.start === 16 && withSaves.eeprom.end === 52,
+      `a saving game declares 16..52 (got ${JSON.stringify(withSaves.eeprom)})`);
+    assert(withSaves.eeprom.start >= 16 && withSaves.eeprom.end <= 1023
+      && withSaves.eeprom.end >= withSaves.eeprom.start, 'and it satisfies the schema’s bounds');
+  }
+
+  {
+    // Required fields are refused up front rather than producing a package that
+    // fails validation somewhere else.
+    const blankAuthor = makeDemoProject();
+    blankAuthor.author = '';
+    blankAuthor.settings.version = '1.0';
+    assert(/author/i.test(packageProblem(blankAuthor) || ''), 'a blank author is refused by name');
+
+    const blankVersion = makeDemoProject();
+    blankVersion.author = 'Tester';
+    blankVersion.settings.version = '';
+    assert(/version/i.test(packageProblem(blankVersion) || ''), 'a blank version is refused by name');
+
+    const ok = ready(makeDemoProject());
+    assert(packageProblem(ok) === null, 'a complete project passes');
+  }
+
+  {
+    // The banner has to be the real game, so two different-looking projects
+    // must not produce the same image.
+    const a = ready(makeDemoProject());
+    const b = ready(makeDemoProject());
+    b.scenes[0].tiles = b.scenes[0].tiles.map(() => 0); // wipe the map
+    const pngA = renderBanner(compileProject(a), Emulator);
+    const pngB = renderBanner(compileProject(b), Emulator);
+    assert(pngA.length !== pngB.length || !pngA.every((v, i) => v === pngB[i]),
+      'a different-looking game produces a different banner');
+
+    // PNG structure: signature, then an IHDR saying 128x64.
+    const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    assert(sig.every((v, i) => pngA[i] === v), 'the banner has a valid PNG signature');
+    const view = new DataView(pngA.buffer, pngA.byteOffset, pngA.byteLength);
+    assert(view.getUint32(16) === 128 && view.getUint32(20) === 64,
+      `IHDR says 128x64 (got ${view.getUint32(16)}x${view.getUint32(20)})`);
+  }
+
+  {
+    assert(validateHex(GOOD_HEX).ok, `a well-formed .hex is accepted (${validateHex(GOOD_HEX).error || 'ok'})`);
+    assert(!validateHex('not a hex file at all').ok, 'a non-HEX file is rejected');
+    assert(!validateHex(`${hexRecord(0, 0, DATA)}\n`).ok,
+      'a .hex with no EOF record is rejected as truncated');
+    // Same record with its checksum byte flipped.
+    const good = hexRecord(0, 0, DATA);
+    const corrupt = good.slice(0, -2) + (good.slice(-2) === 'FF' ? '00' : 'FF');
+    assert(!validateHex(`${corrupt}\n${hexRecord(0, 1, [])}\n`).ok,
+      'a bad record checksum is rejected');
+    // A record claiming more data bytes than it carries.
+    assert(!validateHex(`:10000000AABB33\n${hexRecord(0, 1, [])}\n`).ok,
+      'a record shorter than its byte count is rejected');
+    assert(!validateHex(`:1000000000zz\n${hexRecord(0, 1, [])}\n`).ok,
+      'a non-hexadecimal record is rejected');
+    // Well-formed but far too big for the flash.
+    const big = Array.from({ length: 2000 }, () => hexRecord(0, 0, new Array(16).fill(0xaa))).join('\n');
+    assert(!validateHex(`${big}\n${hexRecord(0, 1, [])}\n`).ok, 'a .hex too large for the flash is rejected');
+  }
+
+  {
+    // The real thing, when a previous AVR build left one behind.
+    const real = join(dirname(dirname(fileURLToPath(import.meta.url))), 'build-avr', 'game.hex');
+    if (existsSync(real)) {
+      const check = validateHex(readFileSync(real, 'utf8'));
+      assert(check.ok, `the real build-avr/game.hex validates (${check.error || `${check.bytes} bytes`})`);
+    }
   }
 }
 

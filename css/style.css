@@ -407,6 +407,14 @@ button.mini:disabled:hover { border-color: var(--border); }
 .help table { border-collapse: collapse; }
 .help td, .help th { border: 1px solid var(--border); padding: 4px 10px; text-align: left; }
 
+/* .arduboy banner preview: the 128x64 screen at 2x, pixel-crisp. */
+.banner-preview {
+  width: 256px; height: 128px;
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  background: #0a0e13;
+}
+
 @media (max-width: 900px) {
   .sidebar, .sidebar.right { width: 180px; min-width: 180px; }
 }

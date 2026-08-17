@@ -3,3 +3,4 @@ build-avr-all/
 node_modules/
 dist/
 out/
+*.arduboy
