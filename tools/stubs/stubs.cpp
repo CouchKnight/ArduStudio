@@ -16,7 +16,9 @@
 long random(long howbig) { return howbig ? 0 : 0; }
 long random(long howsmall, long howbig) { return howbig > howsmall ? howsmall : howsmall; }
 
+void Arduboy2Audio::begin() {}
 bool Arduboy2Audio::enabled() { return true; }
+unsigned long micros() { return 0; }
 void Arduboy2Audio::on() {}
 void Arduboy2Audio::off() {}
 void Arduboy2Audio::toggle() {}
@@ -24,25 +26,31 @@ void Arduboy2Audio::saveOnOff() {}
 
 const uint8_t Arduboy2::font5x7[] = { 0 };
 
-void Arduboy2::begin() {}
-void Arduboy2::setFrameRate(uint8_t) {}
-bool Arduboy2::nextFrame() { return true; }
-void Arduboy2::pollButtons() {}
-bool Arduboy2::pressed(uint8_t) { return false; }
-bool Arduboy2::justPressed(uint8_t) { return false; }
-bool Arduboy2::justReleased(uint8_t) { return false; }
-void Arduboy2::initRandomSeed() {}
-void Arduboy2::setRGBled(uint8_t, uint8_t, uint8_t) {}
-void Arduboy2::setRGBled(uint8_t, uint8_t) {}
-void Arduboy2::freeRGBled() {}
-void Arduboy2::digitalWriteRGB(uint8_t, uint8_t, uint8_t) {}
-void Arduboy2::digitalWriteRGB(uint8_t, uint8_t) {}
-void Arduboy2::clear() {}
-void Arduboy2::display() {}
-uint8_t* Arduboy2::getBuffer() { static uint8_t buf[WIDTH * HEIGHT / 8]; return buf; }
-void Arduboy2::drawPixel(int16_t, int16_t, uint8_t) {}
-void Arduboy2::drawRect(int16_t, int16_t, uint8_t, uint8_t, uint8_t) {}
-void Arduboy2::fillRect(int16_t, int16_t, uint8_t, uint8_t, uint8_t) {}
+uint8_t Arduboy2Base::sBuffer[(HEIGHT * WIDTH) / 8];
+
+void Arduboy2Base::begin() {}
+void Arduboy2Base::boot() {}
+void Arduboy2Base::systemButtons() {}
+void Arduboy2Base::flashlight() {}
+void Arduboy2Base::drawBitmap(int16_t, int16_t, const uint8_t*, uint8_t, uint8_t, uint8_t) {}
+void Arduboy2Base::setFrameRate(uint8_t) {}
+bool Arduboy2Base::nextFrame() { return true; }
+void Arduboy2Base::pollButtons() {}
+bool Arduboy2Base::pressed(uint8_t) { return false; }
+bool Arduboy2Base::justPressed(uint8_t) { return false; }
+bool Arduboy2Base::justReleased(uint8_t) { return false; }
+void Arduboy2Base::initRandomSeed() {}
+void Arduboy2Base::setRGBled(uint8_t, uint8_t, uint8_t) {}
+void Arduboy2Base::setRGBled(uint8_t, uint8_t) {}
+void Arduboy2Base::freeRGBled() {}
+void Arduboy2Base::digitalWriteRGB(uint8_t, uint8_t, uint8_t) {}
+void Arduboy2Base::digitalWriteRGB(uint8_t, uint8_t) {}
+void Arduboy2Base::clear() {}
+void Arduboy2Base::display() {}
+uint8_t* Arduboy2Base::getBuffer() { static uint8_t buf[WIDTH * HEIGHT / 8]; return buf; }
+void Arduboy2Base::drawPixel(int16_t, int16_t, uint8_t) {}
+void Arduboy2Base::drawRect(int16_t, int16_t, uint8_t, uint8_t, uint8_t) {}
+void Arduboy2Base::fillRect(int16_t, int16_t, uint8_t, uint8_t, uint8_t) {}
 void Arduboy2::drawChar(int16_t, int16_t, unsigned char, uint8_t, uint8_t, uint8_t) {}
 void Arduboy2::setCursor(int16_t, int16_t) {}
 

@@ -40,6 +40,7 @@ export function initExportTab(app) {
   const budgetBody = document.getElementById('expBudgetBody');
   const budgetDetails = document.getElementById('expBudgetDetails');
   const pruneToggle = document.getElementById('expPrune');
+  const minimalBootToggle = document.getElementById('expMinimalBoot');
 
   // Whether the detail is open is a preference, so it survives a reload.
   const DETAILS_KEY = 'ardustudio.budgetOpen';
@@ -50,6 +51,12 @@ export function initExportTab(app) {
 
   pruneToggle.addEventListener('change', () => {
     app.project.settings.pruneUnused = pruneToggle.checked;
+    app.save();
+    tryGenerate();
+  });
+
+  minimalBootToggle.addEventListener('change', () => {
+    app.project.settings.minimalBoot = minimalBootToggle.checked;
     app.save();
     tryGenerate();
   });
@@ -84,11 +91,20 @@ export function initExportTab(app) {
         row(label, s.bytes);
       }
     }
+    if (flash.opcodeBytes > 0) {
+      row(`Event handlers (${flash.opcodeCount} kinds used)`, flash.opcodeBytes, 'group');
+    }
+    for (const x of flash.extras) row(x.name, x.bytes, 'group');
     row('Your game', flash.dataBytes, 'group');
     for (const [name, bytes] of Object.entries(flash.data)) {
       if (bytes > 0) row(`  ${name}`, bytes);
     }
+    row('Safety margin', flash.margin, 'group');
     budgetBody.append(table);
+    budgetBody.append(el('p', { class: 'hint' },
+      'The engine only carries the parts your game scripts, so these numbers move '
+      + 'as you build. The margin covers what the pieces cost together rather than '
+      + 'apart, which keeps the estimate on the high side of a real build.'));
 
     const dropped = pruned.tiles.length + pruned.sprites.length + pruned.songs.length;
     if (!pruning) {
@@ -315,6 +331,7 @@ export function initExportTab(app) {
     nameInput.value = app.project.name || '';
     authorInput.value = app.project.author || '';
     pruneToggle.checked = app.project.settings.pruneUnused !== false;
+    minimalBootToggle.checked = app.project.settings.minimalBoot !== false;
     versionInput.value = app.project.settings.version || '';
     genreSel.value = app.project.settings.genre || 'Misc';
     descInput.value = app.project.settings.description || '';

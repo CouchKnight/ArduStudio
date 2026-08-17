@@ -55,11 +55,12 @@ fetch "$CORE_URL/libraries/EEPROM/src/EEPROM.h" "$OUT/tones/EEPROM.h"
 PROJECT="${PROJECT:-demo}"
 echo "== generating sketch from $PROJECT project =="
 node --input-type=module -e "
-import { makeDemoProject } from '$ROOT/js/model.js';
+import { makeDemoProject, makeProject } from '$ROOT/js/model.js';
 import { generateIno } from '$ROOT/js/codegen.js';
 import { writeFileSync } from 'node:fs';
 const project = '$PROJECT' === 'all-features'
   ? (await import('$ROOT/tools/all_features_project.mjs')).makeAllFeaturesProject()
+  : '$PROJECT' === 'blank' ? makeProject()
   : makeDemoProject();
 const { ino } = generateIno(project);
 writeFileSync('$OUT/sketch.cpp', ino);
@@ -67,7 +68,10 @@ console.log('sketch.cpp written:', ino.length, 'chars');
 "
 
 echo "== compiling for ATmega32u4 =="
-CFLAGS="-c -g -Os -w -ffunction-sections -fdata-sections -mmcu=atmega32u4 \
+# -flto matches what the Arduino IDE does. Without it the link comes out several
+# hundred bytes heavier than the figure the IDE reports, which made the Export
+# tab's flash estimate over-predict; js/flashCosts.js is measured with it on.
+CFLAGS="-c -g -Os -w -flto -ffunction-sections -fdata-sections -mmcu=atmega32u4 \
 -DF_CPU=16000000L -DARDUINO=10819 -DARDUINO_AVR_LEONARDO -DARDUINO_ARCH_AVR \
 -DUSB_VID=0x2341 -DUSB_PID=0x8036 -DUSB_MANUFACTURER=\"ArduinoLLC\" -DUSB_PRODUCT=\"Leonardo\" \
 -I$OUT/core -I$OUT/ab2 -I$OUT/tones"
@@ -81,7 +85,8 @@ for f in "$OUT"/core/*.cpp "$OUT"/ab2/*.cpp "$OUT"/tones/*.cpp "$OUT/sketch.cpp"
 done
 
 echo "== linking =="
-avr-gcc -w -Os -g -Wl,--gc-sections -mmcu=atmega32u4 -o "$OUT/game.elf" "$OUT/obj/"*.o -lm
+avr-gcc -w -Os -g -flto -fuse-linker-plugin -Wl,--gc-sections -mmcu=atmega32u4 \
+  -o "$OUT/game.elf" "$OUT/obj/"*.o -lm
 avr-objcopy -O ihex -R .eeprom "$OUT/game.elf" "$OUT/game.hex"
 avr-size "$OUT/game.elf"
 echo "OK: $OUT/game.hex is flashable to an Arduboy / FX / FX-C."

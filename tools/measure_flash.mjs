@@ -14,50 +14,24 @@
 // Usage:  node tools/measure_flash.mjs          # rewrites js/flashCosts.js
 //         node tools/measure_flash.mjs --check  # compares, writes nothing
 
-import { execFileSync } from 'node:child_process';
-import { readdirSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { makeProject, makeEvent, makeSong, noteFreq } from '../js/model.js';
+import { requireObjects, makeFlashMeasurer } from './avr_build.mjs';
+
+import { makeProject, makeEvent, makeSong, makeScene, makeActor, makeTile, noteFreq } from '../js/model.js';
 import { generateIno } from '../js/codegen.js';
+import { packedTilemapSize } from '../js/compiler.js';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const OUT = join(root, 'build-avr');
 const work = mkdtempSync(join(tmpdir(), 'ardustudio-flash-'));
 
-if (!existsSync(join(OUT, 'obj'))) {
-  console.error('No build-avr/obj — run tools/build_avr.sh once so the core and');
-  console.error('library objects exist, then run this again.');
-  process.exit(1);
-}
-
-const CFLAGS = [
-  '-c', '-g', '-Os', '-w', '-ffunction-sections', '-fdata-sections',
-  '-mmcu=atmega32u4', '-DF_CPU=16000000L', '-DARDUINO=10819',
-  '-DARDUINO_AVR_LEONARDO', '-DARDUINO_ARCH_AVR', '-DUSB_VID=0x2341', '-DUSB_PID=0x8036',
-  `-I${join(OUT, 'core')}`, `-I${join(OUT, 'ab2')}`, `-I${join(OUT, 'tones')}`,
-];
-
-// Everything except the sketch itself, which we swap per variant.
-const fixedObjects = readdirSync(join(OUT, 'obj'))
-  .filter((f) => f.endsWith('.o') && f !== 'sketch.cpp.o')
-  .map((f) => join(OUT, 'obj', f));
-
-function flashOf(label, project) {
-  const { ino } = generateIno(project);
-  const cpp = join(work, `${label}.cpp`);
-  const obj = join(work, `${label}.o`);
-  const elf = join(work, `${label}.elf`);
-  writeFileSync(cpp, ino);
-  execFileSync('avr-g++', [...CFLAGS, '-std=gnu++11', '-fpermissive', '-fno-exceptions',
-    '-fno-threadsafe-statics', cpp, '-o', obj], { stdio: 'pipe' });
-  execFileSync('avr-gcc', ['-w', '-Os', '-g', '-Wl,--gc-sections', '-mmcu=atmega32u4',
-    '-o', elf, obj, ...fixedObjects, '-lm'], { stdio: 'pipe' });
-  const size = execFileSync('avr-size', [elf], { encoding: 'utf8' });
-  return parseInt(size.trim().split('\n')[1].trim().split(/\s+/)[0], 10);
-}
+requireObjects(OUT);
+const measure = makeFlashMeasurer(OUT, work);
+const flashOf = (label, project) => measure(label, generateIno(project).ino);
 
 // A project with nothing optional in it: one scene, one plain event.
 function bare() {
@@ -79,6 +53,8 @@ const VARIANTS = {
     cases: [{ value: 0, events: [] }], else: [],
   })],
   SAVES: () => [makeEvent('SAVE_GAME'), makeEvent('LOAD_GAME')],
+  // Linking ArduboyTools at all. A single Play Tone is enough to need it.
+  AUDIO: () => [makeEvent('TONE')],
   MENUS: (p) => [Object.assign(makeEvent('MENU'), {
     varId: p.variables[0].id, options: ['One', 'Two'],
   })],
@@ -90,6 +66,8 @@ const VARIANTS = {
   EFFECTS: () => [Object.assign(makeEvent('ACTOR_EFFECT'), { target: 'player' })],
   TEXT: () => [Object.assign(makeEvent('TEXT'), { text: 'hello' })],
 };
+
+let failed = false;
 
 console.log('== measuring the engine ==');
 const baseline = flashOf('baseline', bare());
@@ -119,7 +97,10 @@ for (const [name, build] of Object.entries(VARIANTS)) {
   p.songs.push(song);
   p.scenes[0].scripts.init.push(Object.assign(makeEvent('PLAY_SONG'), { songId: song.id }));
   const dataBytes = song.notes.length * 2 + 2 + 2; // notes + terminator + table slot
-  costs.SONGS = flashOf('songs', p) - baseline - dataBytes;
+  // Playing a song also links ArduboyTones, which AUDIO already accounts for.
+  const audioOnly = bare();
+  audioOnly.scenes[0].scripts.init.push(makeEvent('TONE'));
+  costs.SONGS = flashOf('songs', p) - flashOf('audio_only', audioOnly) - dataBytes;
   console.log(`  ${'SONGS'.padEnd(16)} +${String(costs.SONGS).padStart(5)} bytes (song data excluded)`);
 }
 
@@ -186,6 +167,183 @@ for (const [name, build] of Object.entries(VARIANTS)) {
   console.log(`  ${'PROJECTILES'.padEnd(16)} +${String(costs.PROJECTILES).padStart(5)} bytes (on top of COLLISIONS)`);
 }
 
+// Each opcode's `case` arm is stripped from runScript when a game never emits
+// it. runScript is one function, so --gc-sections cannot reach inside it and
+// the arms have to come out of the source — which makes them worth measuring.
+//
+// Only opcodes that no subsystem owns are listed. An opcode like MENU is
+// perfectly correlated with its subsystem (MENUS is on exactly when OP_MENU
+// is), and that subsystem's variant already includes the arm, so measuring
+// both would count it twice. SET_VAR, END and JUMP are in the baseline.
+// Several of these opcodes are only emitted for a real actor, so give the
+// scene one to point at.
+function withActor(p) {
+  const a = makeActor('Extra', p.sprites[0].id, 6, 3);
+  p.scenes[0].actors.push(a);
+  return a;
+}
+
+const OPCODE_VARIANTS = {
+  TEXT: () => [Object.assign(makeEvent('TEXT'), { text: 'hi' })],
+  SWITCH_SCENE: (p) => {
+    const dest = makeScene('Elsewhere');
+    p.scenes.push(dest);
+    return [Object.assign(makeEvent('SWITCH_SCENE'), { sceneId: dest.id })];
+  },
+  ADD_VAR: (p) => [Object.assign(makeEvent('ADD_VAR'), { varId: p.variables[0].id, delta: 1 })],
+  IF_VAR: (p) => [Object.assign(makeEvent('IF_VAR'), { varId: p.variables[0].id })],
+  WAIT: () => [makeEvent('WAIT')],
+  ACTOR_VIS: () => [Object.assign(makeEvent('ACTOR_HIDE'), { target: 'player' })],
+  SET_TILE: () => [makeEvent('SET_TILE')],
+  PLAYER_POS: () => [makeEvent('PLAYER_POS')],
+  ACTOR_MOVE: (p) => [Object.assign(makeEvent('ACTOR_MOVE'), { target: withActor(p).id })],
+  SET_ACTOR_SPRITE: (p) => [Object.assign(makeEvent('SET_ACTOR_SPRITE'),
+    { target: 'player', spriteId: p.sprites[0].id })],
+  WAIT_INPUT: () => [Object.assign(makeEvent('WAIT_INPUT'), { buttons: { a: true } })],
+  IF_INPUT: () => [Object.assign(makeEvent('IF_INPUT'), { buttons: { a: true } })],
+  SET_ACTOR_DIR: () => [Object.assign(makeEvent('SET_ACTOR_DIR'), { target: 'player' })],
+  SET_ACTOR_SPEED: (p) => [Object.assign(makeEvent('SET_ACTOR_SPEED'), { target: withActor(p).id })],
+  IF_ACTOR_AT: () => [Object.assign(makeEvent('IF_ACTOR_AT'), { target: 'player' })],
+  IF_ACTOR_DISTANCE: () => [Object.assign(makeEvent('IF_ACTOR_DISTANCE'), { target: 'player' })],
+  STORE_ACTOR_DIR: (p) => [Object.assign(makeEvent('STORE_ACTOR_DIR'),
+    { target: 'player', varId: p.variables[0].id })],
+  STORE_ACTOR_POS: (p) => [Object.assign(makeEvent('STORE_ACTOR_POS'),
+    { target: 'player', varX: p.variables[0].id, varY: p.variables[1].id })],
+  SEED_RNG: () => [makeEvent('SEED_RNG')],
+  SET_ANIM_FRAME: () => [Object.assign(makeEvent('SET_ANIM_FRAME'), { target: 'player' })],
+  SET_ANIM_SPEED: () => [Object.assign(makeEvent('SET_ANIM_SPEED'), { target: 'player' })],
+  SET_ANIM_STATE: (p) => {
+    // The state has to belong to the sprite the target wears, and a scene
+    // script cannot resolve the player's sprite, so name an actor.
+    const a = withActor(p);
+    const spr = p.sprites.find((s) => s.id === a.spriteId);
+    return [Object.assign(makeEvent('SET_ANIM_STATE'),
+      { target: a.id, stateId: spr.states[0].id })];
+  },
+  START_SCRIPT: () => [makeEvent('START_SCRIPT')],
+};
+
+console.log('\n== measuring opcode arms ==');
+const opcodes = {};
+for (const [name, build] of Object.entries(OPCODE_VARIANTS)) {
+  const p = bare();
+  p.scenes[0].scripts.init.push(...build(p));
+  // A variant whose events the compiler skipped (a missing target, an
+  // unnamed animation state) would measure as free and quietly make the
+  // estimate too low, so insist the arm is really switched on.
+  const { compiled } = generateIno(p);
+  if (!compiled.features[`OP_${name}`]) {
+    failed = true;
+    console.error(`  OP_${name}: variant does not emit the opcode`
+      + `${compiled.warnings.length ? ` — ${compiled.warnings[0]}` : ''}`);
+    continue;
+  }
+  let n;
+  try {
+    n = flashOf(`op_${name.toLowerCase()}`, p);
+  } catch (err) {
+    failed = true;
+    console.error(`  ${name}: FAILED to build — ${err.message.split('\n')[0]}`);
+    continue;
+  }
+  // The event itself adds bytecode and sometimes a string; that is data the
+  // estimate counts separately, so take it back out.
+  const dataBytes = generateIno(p).compiled.code.length - generateIno(bare()).compiled.code.length;
+  opcodes[`OP_${name}`] = Math.max(0, n - baseline - dataBytes);
+  console.log(`  ${`OP_${name}`.padEnd(20)} +${String(opcodes[`OP_${name}`]).padStart(5)} bytes`);
+}
+
+console.log('\n== measuring encodings and boot ==');
+// What the Arduboy startup logo costs a game that leaves it in.
+let bootLogo = 0;
+{
+  const p = bare();
+  p.settings.minimalBoot = false;
+  bootLogo = flashOf('boot_logo', p) - baseline;
+  console.log(`  ${'BOOT_LOGO'.padEnd(20)} +${String(bootLogo).padStart(5)} bytes`);
+}
+// What the packed-tilemap reader costs. The bare project's scene is two tiles,
+// so it packs to one bit each; the comparison is the same scene painted with
+// more than 16 different tiles, which is the point where packing stops paying
+// and the sketch keeps the plain one-byte-per-tile lookup.
+let packedTiles = 0;
+{
+  const packed = bare();
+  const plain = bare();
+  while (plain.tiles.length <= 16) {
+    plain.tiles.push(makeTile(`T${plain.tiles.length}`, ['00000000']));
+  }
+  const sc = plain.scenes[0];
+  for (let i = 0; i < sc.tiles.length; i++) sc.tiles[i] = i % plain.tiles.length;
+
+  const pc = generateIno(packed).compiled;
+  const lc = generateIno(plain).compiled;
+  if (pc.features.PACKED_TILES === lc.features.PACKED_TILES) {
+    failed = true;
+    console.error('  PACKED_TILES: both variants pack the same way — cannot measure');
+  } else {
+    // The two differ in tile art and map encoding as well as in code, and the
+    // estimate counts both of those separately. Subtract them back out.
+    const dataDelta = (lc.tiles.length - pc.tiles.length) * 8
+      + Math.ceil(lc.tiles.length / 8) - Math.ceil(pc.tiles.length / 8)
+      + packedTilemapSize(lc.scenes[0].tiles) - packedTilemapSize(pc.scenes[0].tiles);
+    packedTiles = flashOf('packed_tiles', packed) - (flashOf('plain_tiles', plain) - dataDelta);
+    console.log(`  ${'PACKED_TILES'.padEnd(20)} +${String(packedTiles).padStart(5)} bytes`);
+  }
+}
+
+// Adding the pieces up under-predicts a real game by a few percent, and always
+// in the same direction. Each variant is measured on its own, so the model
+// never sees what only appears once the pieces are combined: LTO inlines less
+// aggressively in a bigger sketch, and the switch dispatch and branch targets
+// grow as the code does.
+//
+// Rather than leave the Export tab quietly optimistic — the one direction it
+// must not be — calibrate the shortfall here against real builds and publish it
+// as a margin. Regenerating the table regenerates the margin with it.
+console.log('\n== calibrating against real builds ==');
+let margin = 0;
+{
+  const { makeDemoProject } = await import('../js/model.js');
+  const { makeAllFeaturesProject } = await import('./all_features_project.mjs');
+
+  // The additive model, using the numbers just measured rather than the table
+  // on disk, which is what compileProject() would still be holding.
+  const modelTotal = (compiled) => {
+    const f = compiled.features;
+    let n = baseline + compiled.flash.dataBytes;
+    for (const [name, bytes] of Object.entries(costs)) if (f[name]) n += bytes;
+    for (const [name, bytes] of Object.entries(opcodes)) if (f[name]) n += bytes;
+    if (!f.MINIMAL_BOOT) n += bootLogo;
+    if (f.PACKED_TILES) n += packedTiles;
+    return n;
+  };
+
+  for (const [label, project] of [['demo', makeDemoProject()],
+    ['all-features', makeAllFeaturesProject()]]) {
+    const { compiled } = generateIno(project);
+    const model = modelTotal(compiled);
+    const real = flashOf(`cal_${label}`, project);
+    const short = (real - model) / model;
+    margin = Math.max(margin, short);
+    console.log(`  ${label.padEnd(16)} model ${model}, real ${real}`
+      + ` — model is ${(short * 100).toFixed(1)}% low`);
+  }
+  // Round up to the next whole percent and add one more, so an unmeasured
+  // project shape has somewhere to go before the estimate goes optimistic.
+  margin = Math.max(0, Math.ceil(margin * 100) + 1) / 100;
+  console.log(`  margin: ${(margin * 100).toFixed(0)}%`);
+}
+
+// LTO inlines differently between variants, so a cheap subsystem occasionally
+// measures a handful of bytes below the baseline. The estimate has to err high
+// (tools/check_flash_estimate.mjs fails if it lands under a real build), so a
+// negative reading becomes zero rather than a discount.
+for (const table of [costs, opcodes]) {
+  for (const [k, v] of Object.entries(table)) if (v < 0) table[k] = 0;
+}
+if (packedTiles < 0) packedTiles = 0;
+
 const body = `// GENERATED by tools/measure_flash.mjs — do not edit by hand.
 //
 // What the engine costs in flash on an ATmega32u4, measured by compiling a bare
@@ -198,8 +356,8 @@ const body = `// GENERATED by tools/measure_flash.mjs — do not edit by hand.
 // Usable flash on an Arduboy once the bootloader has its share.
 export const FLASH_BUDGET = 28672;
 
-// A game with no optional subsystems at all, including the Arduboy2 and
-// ArduboyTones libraries it always links.
+// A game with no optional subsystems and no optional opcodes: the Arduboy2
+// library, the engine's always-on core, and a script that sets one variable.
 export const FLASH_BASELINE = ${baseline};
 
 // Extra bytes each subsystem adds when a game scripts it.
@@ -207,6 +365,28 @@ export const FLASH_SUBSYSTEM = {
 ${Object.entries(costs).sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `  ${k}: ${v},`).join('\n')}
 };
+
+// Extra bytes each opcode's arm of runScript's switch adds. Opcodes a
+// subsystem above already accounts for are deliberately absent.
+export const FLASH_OPCODE = {
+${Object.entries(opcodes).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `  ${k}: ${v},`).join('\n')}
+};
+
+// Leaving the Arduboy startup logo in (Export tab: "Skip the Arduboy boot
+// logo"). The baseline above boots straight into the game.
+export const FLASH_BOOT_LOGO = ${bootLogo};
+
+// Reading bit-packed scene tile maps, for a game with a scene small enough to
+// pack. Pays for itself many times over on the map data it saves.
+export const FLASH_PACKED_TILES = ${packedTiles};
+
+// Adding the parts up lands a few percent below a real build, because each was
+// measured alone and none of them sees the others. Measured against real builds
+// of the demo and the all-features project, rounded up. The Export tab applies
+// it so the estimate errs high — the direction that never tells someone a game
+// fits when it does not.
+export const FLASH_SAFETY_MARGIN = ${margin};
 `;
 
 if (process.argv.includes('--check')) {
@@ -216,4 +396,9 @@ if (process.argv.includes('--check')) {
   const dest = join(root, 'js', 'flashCosts.js');
   writeFileSync(dest, body);
   console.log(`\nWrote ${dest}`);
+}
+
+if (failed) {
+  console.error('\nSome variants could not be measured — the table above is incomplete.');
+  process.exit(1);
 }

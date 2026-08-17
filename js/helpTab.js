@@ -473,11 +473,22 @@ scripts. The <b>Export</b> tab shows the total against that budget before you co
 anything, and turns red if you are over — the Arduino IDE would otherwise be the first to
 tell you, after the fact.</p>
 <p>Open <i>What's using the space?</i> for the breakdown. The surprising part is usually the
-middle section: <b>each optional subsystem is all-or-nothing</b>. One <b>Launch Projectile</b>
-anywhere in the game brings in the whole projectile engine — the single most expensive at
-around 1.4 KB — and one <b>Show Overlay</b> brings in the overlay. Deleting the <i>last</i>
-event of a kind removes that subsystem entirely, which is why the breakdown names the events
-that switched each one on.</p>
+middle section: <b>each optional subsystem is all-or-nothing</b>. One <b>Display Menu</b>
+anywhere in the game brings in the whole menu system — the single most expensive at around
+1 KB — one <b>Launch Projectile</b> brings in projectiles and collisions, and one
+<b>Show Overlay</b> brings in the overlay. Deleting the <i>last</i> event of a kind removes
+that subsystem entirely, which is why the breakdown names the events that switched each one
+on.</p>
+<p>Under that, <b>event handlers</b> is what the kinds of event you use cost. The engine only
+carries the handlers for events your game actually contains, so this grows with the
+<i>variety</i> of your scripting rather than its length — an extra copy of an event you
+already use is free, a first use of a new one is not.</p>
+<p>An empty project starts at about <b>13 KB</b>, and a game using every subsystem and every
+event kind at once still lands around <b>22.5 KB</b>, so there is real room to work in. If you
+are close to the ceiling, the cheapest thing you can give up is the <b>Arduboy boot logo</b>
+(a tick box under the breakdown, off by default) — worth about 600 bytes. Holding <b>B</b> at
+power-on still toggles sound; what you lose is the startup animation and the hold-<b>UP</b>
+flashlight recovery mode.</p>
 <p>ArduStudio also leaves out tiles, sprites and songs that nothing in the game references.
 They stay in your project and in the editors; they are simply not written into the sketch.
 Tick <b>Always include in build</b> on a tile or sprite (or <i>keep</i> on a song) for art you

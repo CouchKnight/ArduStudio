@@ -31,6 +31,7 @@
 #define GREEN_LED 11
 #define BLUE_LED 9
 
+unsigned long micros();
 long random(long howbig);
 long random(long howsmall, long howbig);
 
@@ -39,6 +40,7 @@ template <typename T> T max(T a, T b) { return a > b ? a : b; }
 
 class Arduboy2Audio {
  public:
+  static void begin();
   static bool enabled();
   static void on();
   static void off();
@@ -46,11 +48,18 @@ class Arduboy2Audio {
   static void saveOnOff();
 };
 
-class Arduboy2 {
+// Mirrors the real library's split: Arduboy2Base is everything but text, and
+// Arduboy2 adds the print/font layer on top. Generated sketches use the Base
+// class and render characters themselves.
+class Arduboy2Base {
  public:
   uint16_t frameCount;
   Arduboy2Audio audio;
+  static uint8_t sBuffer[(HEIGHT * WIDTH) / 8];
   void begin();
+  void boot();
+  void systemButtons();
+  void flashlight();
   void setFrameRate(uint8_t rate);
   bool nextFrame();
   void pollButtons();
@@ -69,6 +78,11 @@ class Arduboy2 {
   void drawPixel(int16_t x, int16_t y, uint8_t color);
   void drawRect(int16_t x, int16_t y, uint8_t w, uint8_t h, uint8_t color);
   void fillRect(int16_t x, int16_t y, uint8_t w, uint8_t h, uint8_t color);
+  void drawBitmap(int16_t x, int16_t y, const uint8_t* bitmap, uint8_t w, uint8_t h, uint8_t color);
+};
+
+class Arduboy2 : public Arduboy2Base {
+ public:
   void drawChar(int16_t x, int16_t y, unsigned char c, uint8_t color, uint8_t bg, uint8_t size);
   void setCursor(int16_t x, int16_t y);
   static const PROGMEM uint8_t font5x7[];

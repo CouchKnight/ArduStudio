@@ -10,26 +10,70 @@
 // Usable flash on an Arduboy once the bootloader has its share.
 export const FLASH_BUDGET = 28672;
 
-// A game with no optional subsystems at all, including the Arduboy2 and
-// ArduboyTones libraries it always links.
-export const FLASH_BASELINE = 21780;
+// A game with no optional subsystems and no optional opcodes: the Arduboy2
+// library, the engine's always-on core, and a script that sets one variable.
+export const FLASH_BASELINE = 12988;
 
 // Extra bytes each subsystem adds when a game scripts it.
 export const FLASH_SUBSYSTEM = {
-  PROJECTILES: 1024,
-  EXPR: 934,
-  OVERLAY: 902,
-  COLLISIONS: 422,
-  FADE: 316,
-  SCENE_STACK: 256,
-  TEXT_VARS: 186,
-  UPDATE_SCRIPTS: 170,
-  SWITCH: 152,
-  SONGS: 56,
-  MENUS: 16,
-  BUTTON_SCRIPTS: 8,
-  TEXT: 8,
-  LED: 6,
-  EFFECTS: 4,
-  SAVES: 2,
+  MENUS: 1030,
+  PROJECTILES: 912,
+  EXPR: 894,
+  OVERLAY: 690,
+  BUTTON_SCRIPTS: 472,
+  SAVES: 368,
+  FADE: 310,
+  TEXT_VARS: 300,
+  UPDATE_SCRIPTS: 294,
+  COLLISIONS: 278,
+  AUDIO: 254,
+  LED: 196,
+  SWITCH: 172,
+  EFFECTS: 110,
+  TEXT: 70,
+  SONGS: 4,
+  SCENE_STACK: 0,
 };
+
+// Extra bytes each opcode's arm of runScript's switch adds. Opcodes a
+// subsystem above already accounts for are deliberately absent.
+export const FLASH_OPCODE = {
+  OP_IF_ACTOR_DISTANCE: 451,
+  OP_SET_ANIM_STATE: 330,
+  OP_IF_ACTOR_AT: 241,
+  OP_SEED_RNG: 181,
+  OP_ACTOR_MOVE: 177,
+  OP_SET_TILE: 168,
+  OP_SET_ACTOR_SPRITE: 155,
+  OP_IF_INPUT: 151,
+  OP_IF_VAR: 149,
+  OP_SET_ANIM_FRAME: 127,
+  OP_SET_ACTOR_DIR: 119,
+  OP_SET_ANIM_SPEED: 99,
+  OP_ADD_VAR: 97,
+  OP_ACTOR_VIS: 94,
+  OP_SET_ACTOR_SPEED: 89,
+  OP_PLAYER_POS: 81,
+  OP_TEXT: 66,
+  OP_START_SCRIPT: 62,
+  OP_WAIT: 34,
+  OP_WAIT_INPUT: 34,
+  OP_STORE_ACTOR_POS: 32,
+  OP_SWITCH_SCENE: 16,
+  OP_STORE_ACTOR_DIR: 5,
+};
+
+// Leaving the Arduboy startup logo in (Export tab: "Skip the Arduboy boot
+// logo"). The baseline above boots straight into the game.
+export const FLASH_BOOT_LOGO = 626;
+
+// Reading bit-packed scene tile maps, for a game with a scene small enough to
+// pack. Pays for itself many times over on the map data it saves.
+export const FLASH_PACKED_TILES = 134;
+
+// Adding the parts up lands a few percent below a real build, because each was
+// measured alone and none of them sees the others. Measured against real builds
+// of the demo and the all-features project, rounded up. The Export tab applies
+// it so the estimate errs high — the direction that never tells someone a game
+// fits when it does not.
+export const FLASH_SAFETY_MARGIN = 0.01;
