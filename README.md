@@ -210,11 +210,38 @@ usable flash and 2,560 bytes of RAM:
 
 | Project | Flash | RAM |
 |---|---|---|
-| Key Quest demo | 23,468 | 1,949 |
-| Every subsystem at once | 27,130 | 2,047 |
+| Key Quest demo | 22,894 | 1,922 |
+| Every subsystem at once | 27,114 | 2,047 |
 
 The optional subsystems come to about 3.4 KB of flash in total, so a game reaching for all of
 them has roughly 1.9 KB left for its own scenes and art.
+
+## Flash budget
+
+An Arduboy has **28,672 bytes** of usable flash. The **Export** tab shows what your game will
+occupy against that budget *before* you compile, with a collapsible breakdown, so an oversized
+game is caught in ArduStudio rather than by the Arduino IDE afterwards.
+
+The breakdown's middle section is usually the surprise: **optional subsystems are
+all-or-nothing.** One `Launch Projectile` anywhere brings in the whole projectile engine
+(~1.4 KB, the most expensive), one `Show Overlay` brings in the overlay (~0.9 KB), and so on.
+Deleting the *last* event of a kind removes that subsystem entirely — which is why the panel
+names the events that switched each one on.
+
+ArduStudio also leaves tiles, sprites and songs that nothing references out of the build. They
+stay in the project and the editors; they just are not written into the sketch. Tick **Always
+include in build** to keep one anyway, or turn pruning off entirely under the breakdown.
+
+The estimate comes from measured figures rather than guesses:
+
+```bash
+npm run measure:flash     # re-measure the engine, rewriting js/flashCosts.js
+npm run check:flash       # compare the estimate against a real AVR build
+```
+
+`check:flash` fails if the estimate drifts past 5% *or* falls below the real size — it has to
+err high, since a warning that arrives too late is the problem it exists to prevent. Currently
+within about 1% on both the demo and the all-features project.
 
 ## Sharing a game: the `.arduboy` package
 

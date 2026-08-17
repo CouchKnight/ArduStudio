@@ -208,6 +208,22 @@
           <button id="expCopyIno" class="btn">Copy sketch to clipboard</button>
           <span id="expStats" class="hint"></span>
         </div>
+        <div class="budget">
+          <div class="budget-head">
+            <b id="expBudgetLabel">Flash</b>
+            <span id="expBudgetNum" class="hint"></span>
+          </div>
+          <div class="budget-bar"><div id="expBudgetFill"></div></div>
+          <p id="expBudgetNote" class="hint"></p>
+        </div>
+        <details id="expBudgetDetails" class="budget-details">
+          <summary>What's using the space?</summary>
+          <div id="expBudgetBody"></div>
+          <label class="prune-toggle">
+            <input type="checkbox" id="expPrune">
+            Leave out art and music nothing uses
+          </label>
+        </details>
         <div id="expWarnings" class="warnings"></div>
       </div>
       <div class="panel">
