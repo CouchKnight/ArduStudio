@@ -466,6 +466,25 @@ events claims nothing, because it writes nothing.</p>
 <p class="hint">Working from the repository instead? <code>npm run build:arduboy</code> compiles
 with the real AVR toolchain and writes a finished package in one step, no manual compile.</p>
 
+<h2>How much room you have</h2>
+<p>An Arduboy has <b>28,672 bytes</b> of usable flash, and everything competes for it: the
+engine, the optional parts of the engine your game switches on, and your art, music and
+scripts. The <b>Export</b> tab shows the total against that budget before you compile
+anything, and turns red if you are over — the Arduino IDE would otherwise be the first to
+tell you, after the fact.</p>
+<p>Open <i>What's using the space?</i> for the breakdown. The surprising part is usually the
+middle section: <b>each optional subsystem is all-or-nothing</b>. One <b>Launch Projectile</b>
+anywhere in the game brings in the whole projectile engine — the single most expensive at
+around 1.4 KB — and one <b>Show Overlay</b> brings in the overlay. Deleting the <i>last</i>
+event of a kind removes that subsystem entirely, which is why the breakdown names the events
+that switched each one on.</p>
+<p>ArduStudio also leaves out tiles, sprites and songs that nothing in the game references.
+They stay in your project and in the editors; they are simply not written into the sketch.
+Tick <b>Always include in build</b> on a tile or sprite (or <i>keep</i> on a song) for art you
+mean to use later, or turn the whole thing off with the checkbox under the breakdown.</p>
+<p class="hint">The total is an estimate from measured figures, normally within about 1%, and
+deliberately errs slightly high. The Arduino IDE still has the last word.</p>
+
 <h2>Limits (per project)</h2>
 <table>
   <tr><td>Scenes</td><td>up to 255 (flash-bound in practice; a scene ≈ 150–400 bytes)</td></tr>

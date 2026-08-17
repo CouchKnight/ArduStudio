@@ -149,6 +149,13 @@ export function initTileEditor(app) {
         type: 'checkbox', checked: tile.solid,
         onchange: (e) => { tile.solid = e.target.checked; app.save(); renderList(); },
       }), ' Solid (blocks walking)'),
+      // A tile painted nowhere is left out of the build to save flash; this
+      // keeps one in anyway, for art you mean to use later.
+      el('label', { title: 'Include in the exported game even if no scene paints it' },
+        el('input', {
+          type: 'checkbox', checked: !!tile.keep,
+          onchange: (e) => { tile.keep = e.target.checked; app.save(); },
+        }), ' Always include in build'),
       transformButtons(() => tile.pixels, 8, 8, () => { app.save(); grid.draw(); redrawPreview(); renderList(); }),
       el('div', {}, el('div', { class: 'hint' }, 'Preview (1×… well, 6×)'), el('div', { class: 'preview-box' }, preview)),
       el('button', {
@@ -354,6 +361,13 @@ export function initSpriteEditor(app) {
         onchange: (e) => { spr.name = e.target.value; app.save(); renderList(); },
       })),
       el('label', {}, 'Size ', sizeSel),
+      // Sprites no actor or script names are left out of the build; this keeps
+      // one in anyway.
+      el('label', { title: 'Include in the exported game even if nothing references it' },
+        el('input', {
+          type: 'checkbox', checked: !!spr.keep,
+          onchange: (e) => { spr.keep = e.target.checked; app.save(); },
+        }), ' Always include in build'),
       frameTabs,
       transformButtons(() => spr.frames[frame], spr.width, spr.height, () => { app.save(); grid.draw(); renderList(); }),
       statesPanel(spr),

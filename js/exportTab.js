@@ -26,16 +26,91 @@ export function initExportTab(app) {
     return base + '.ino';
   }
 
+  // --------------------------------------------------------- the flash budget
+  //
+  // A game that overruns the Arduboy's 28 KB only finds out at the Arduino IDE,
+  // which is far too late and says nothing about what to cut. The compiler
+  // returns a measured estimate and a breakdown; this shows both, with the
+  // detail folded away until it is wanted.
+  const budgetBox = document.querySelector('.budget');
+  const budgetLabel = document.getElementById('expBudgetLabel');
+  const budgetNum = document.getElementById('expBudgetNum');
+  const budgetFill = document.getElementById('expBudgetFill');
+  const budgetNote = document.getElementById('expBudgetNote');
+  const budgetBody = document.getElementById('expBudgetBody');
+  const budgetDetails = document.getElementById('expBudgetDetails');
+  const pruneToggle = document.getElementById('expPrune');
+
+  // Whether the detail is open is a preference, so it survives a reload.
+  const DETAILS_KEY = 'ardustudio.budgetOpen';
+  try { budgetDetails.open = localStorage.getItem(DETAILS_KEY) === '1'; } catch { /* private mode */ }
+  budgetDetails.addEventListener('toggle', () => {
+    try { localStorage.setItem(DETAILS_KEY, budgetDetails.open ? '1' : '0'); } catch { /* ignore */ }
+  });
+
+  pruneToggle.addEventListener('change', () => {
+    app.project.settings.pruneUnused = pruneToggle.checked;
+    app.save();
+    tryGenerate();
+  });
+
+  const kb = (n) => `${(n / 1024).toFixed(1)} KB`;
+
+  function renderBudget(flash, pruned, pruning) {
+    const pct = Math.min(100, Math.round((flash.total / flash.budget) * 100));
+    const over = flash.total > flash.budget;
+    budgetBox.classList.toggle('over', over);
+    budgetLabel.textContent = over ? '⚠ Over the flash budget' : 'Flash';
+    budgetNum.textContent = `${flash.total.toLocaleString()} of ${flash.budget.toLocaleString()} bytes (${pct}%)`;
+    budgetFill.style.width = `${pct}%`;
+    budgetNote.textContent = over
+      ? `${flash.over.toLocaleString()} bytes too big — the Arduino IDE will refuse to upload this. Open the breakdown below to see what is costing the most.`
+      : `${(flash.budget - flash.total).toLocaleString()} bytes to spare. This is an estimate; the Arduino IDE has the last word.`;
+
+    clear(budgetBody);
+    const table = el('table');
+    const row = (name, bytes, cls) => table.append(el('tr', { class: cls || '' },
+      el('td', {}, name), el('td', { class: 'num' }, bytes == null ? '' : `${bytes.toLocaleString()} B`)));
+
+    row('Engine (always present)', flash.baseline);
+    if (flash.subsystems.length) {
+      row('Optional subsystems', flash.subsystemBytes, 'group');
+      for (const s of flash.subsystems) {
+        // A zero-cost subsystem is one whose code the engine always carries;
+        // saying so is more honest than listing it as free.
+        const label = s.bytes > 0
+          ? `  ${s.name} — from ${s.from.slice(0, 2).join(', ')}`
+          : `  ${s.name} — always included`;
+        row(label, s.bytes);
+      }
+    }
+    row('Your game', flash.dataBytes, 'group');
+    for (const [name, bytes] of Object.entries(flash.data)) {
+      if (bytes > 0) row(`  ${name}`, bytes);
+    }
+    budgetBody.append(table);
+
+    const dropped = pruned.tiles.length + pruned.sprites.length + pruned.songs.length;
+    if (!pruning) {
+      budgetBody.append(el('p', { class: 'hint' },
+        'Pruning is off, so every tile, sprite and song ships whether the game reaches it or not.'));
+    } else if (dropped) {
+      const parts = [];
+      if (pruned.tiles.length) parts.push(`${pruned.tiles.length} tile${pruned.tiles.length === 1 ? '' : 's'}`);
+      if (pruned.sprites.length) parts.push(`${pruned.sprites.length} sprite${pruned.sprites.length === 1 ? '' : 's'}`);
+      if (pruned.songs.length) parts.push(`${pruned.songs.length} song${pruned.songs.length === 1 ? '' : 's'}`);
+      budgetBody.append(el('p', { class: 'hint' },
+        `Left out of the build because nothing references them: ${parts.join(', ')} — `
+        + `${[...pruned.tiles, ...pruned.sprites, ...pruned.songs].join(', ')}. `
+        + 'They are still in your project; tick "Always include" on one to keep it.'));
+    }
+  }
+
   function tryGenerate() {
     try {
       const { ino, compiled, warnings } = generateIno(app.project);
-      const dataBytes = compiled.code.length +
-        compiled.strings.reduce((n, s) => n + s.length + 1, 0) +
-        compiled.tiles.length * 8 +
-        compiled.sprites.reduce((n, s) => n + 2 + s.frames.length * s.frames[0].length, 0) +
-        compiled.scenes.reduce((n, sc) => n + sc.tiles.length + 16, 0) +
-        compiled.songs.reduce((n, sg) => n + sg.notes.length * 4 + 2, 0);
-      statsSpan.textContent = `~${(dataBytes / 1024).toFixed(1)} KB game data · ${compiled.scenes.length} scenes · ${compiled.strings.length} strings · ${compiled.songs.length} songs`;
+      statsSpan.textContent = `${compiled.scenes.length} scenes · ${compiled.strings.length} strings · ${compiled.songs.length} songs · ${kb(compiled.flash.dataBytes)} of game data`;
+      renderBudget(compiled.flash, compiled.pruned, compiled.pruning);
       warnBox.textContent = warnings.join('\n');
       return ino;
     } catch (err) {
@@ -239,6 +314,7 @@ export function initExportTab(app) {
     renderIoHint();
     nameInput.value = app.project.name || '';
     authorInput.value = app.project.author || '';
+    pruneToggle.checked = app.project.settings.pruneUnused !== false;
     versionInput.value = app.project.settings.version || '';
     genreSel.value = app.project.settings.genre || 'Misc';
     descInput.value = app.project.settings.description || '';

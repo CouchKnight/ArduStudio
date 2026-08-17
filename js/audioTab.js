@@ -57,6 +57,13 @@ export function initAudioTab(app) {
         onclick: () => { selected = i; refresh(); },
       },
         el('span', {}, `${s.name} (${s.notes.length})`),
+        // A song no Play Song event names is left out of the build; this keeps
+        // it in anyway.
+        el('label', { class: 'hint', title: 'Include in the exported game even if no event plays it' },
+          el('input', {
+            type: 'checkbox', checked: !!s.keep,
+            onchange: (e) => { s.keep = e.target.checked; app.save(); },
+          }), ' keep'),
         el('button', {
           class: 'mini', title: 'Delete song',
           onclick: (e) => {

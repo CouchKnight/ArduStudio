@@ -8,6 +8,8 @@
   "scripts": {
     "build:offline": "node tools/build_offline.mjs",
     "build:arduboy": "node tools/build_arduboy.mjs",
+    "measure:flash": "node tools/measure_flash.mjs",
+    "check:flash": "node tools/check_flash_estimate.mjs",
     "start:desktop": "npm run build:offline && electron .",
     "package:win": "npm run build:offline && electron-packager . ArduStudio --platform=win32 --arch=x64 --out=out --overwrite --ignore=\"^/(node_modules|out|build-avr|docs|\\.git|\\.github)\"",
     "package:linux": "npm run build:offline && electron-packager . ArduStudio --platform=linux --arch=x64 --out=out --overwrite --ignore=\"^/(node_modules|out|build-avr|docs|\\.git|\\.github)\"",

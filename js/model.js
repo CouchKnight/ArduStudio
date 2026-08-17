@@ -871,6 +871,9 @@ export function makeProject(name = 'Untitled Game') {
       version: '1.0',
       genre: 'Misc',
       description: '',
+      // Leave out art and music nothing references, to save flash. Off means
+      // every asset ships whether the game reaches it or not.
+      pruneUnused: true,
     },
     variables: [
       { id: uid('var'), name: 'has_key' },
@@ -1126,5 +1129,7 @@ export function normalizeProject(p) {
   if (typeof p.settings.version !== 'string' || !p.settings.version.trim()) p.settings.version = '1.0';
   if (typeof p.settings.genre !== 'string') p.settings.genre = 'Misc';
   if (typeof p.settings.description !== 'string') p.settings.description = '';
+  // Older projects predate pruning; default it on, but honour an explicit off.
+  if (typeof p.settings.pruneUnused !== 'boolean') p.settings.pruneUnused = true;
   return p;
 }

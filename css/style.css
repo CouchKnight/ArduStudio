@@ -407,6 +407,24 @@ button.mini:disabled:hover { border-color: var(--border); }
 .help table { border-collapse: collapse; }
 .help td, .help th { border: 1px solid var(--border); padding: 4px 10px; text-align: left; }
 
+/* Flash budget meter in the Export tab. */
+.budget { margin: 10px 0 4px; }
+.budget-head { display: flex; justify-content: space-between; align-items: baseline; }
+.budget-bar {
+  height: 10px; margin: 4px 0; border: 1px solid var(--border);
+  background: var(--bg); overflow: hidden;
+}
+.budget-bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.budget.over .budget-bar > div { background: var(--warn); }
+.budget.over .budget-head b { color: var(--warn); }
+.budget-details { margin: 4px 0 8px; font-size: 12px; }
+.budget-details summary { cursor: pointer; color: var(--muted); }
+.budget-details table { border-collapse: collapse; margin: 6px 0; width: 100%; }
+.budget-details td { padding: 1px 8px 1px 0; }
+.budget-details td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.budget-details .group { color: var(--muted); padding-top: 6px; }
+.prune-toggle { display: block; margin-top: 6px; color: var(--muted); }
+
 /* .arduboy banner preview: the 128x64 screen at 2x, pixel-crisp. */
 .banner-preview {
   width: 256px; height: 128px;

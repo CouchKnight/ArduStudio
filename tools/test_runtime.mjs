@@ -9,8 +9,9 @@ import {
   makeDemoProject, makeEvent as makeEventOfType, normalizeProject,
   makeActor as makeActorOfType, makeSpriteState as makeSpriteStateOfType,
   renameVariableReferences, cloneWithNewIds, retargetActorRefs, forEachEvent,
+  makeProject, makeSprite as makeSpriteOfType, makeTile as makeTileOfType,
 } from '../js/model.js';
-import { compileProject, TEXT_VAR_MARKER, displayWidth } from '../js/compiler.js';
+import { compileProject, TEXT_VAR_MARKER, displayWidth, OP } from '../js/compiler.js';
 import { generateIno } from '../js/codegen.js';
 import { compileExpression, evalExpression } from '../js/expression.js';
 import { makeAllFeaturesProject } from './all_features_project.mjs';
@@ -2122,6 +2123,126 @@ console.log('— .arduboy package —');
       const check = validateHex(readFileSync(real, 'utf8'));
       assert(check.ok, `the real build-avr/game.hex validates (${check.error || `${check.bytes} bytes`})`);
     }
+  }
+}
+
+console.log('— flash budget and pruning —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+
+  {
+    // The old feature detection scanned the finished bytecode for opcode values,
+    // so an operand that happened to equal one switched a whole subsystem on.
+    // A game of nothing but Set Variable must claim nothing.
+    const p = makeProject();
+    p.scenes[0].scripts.init = [OP.SET_LED, OP.MENU, OP.SAVE_GAME, OP.SWITCH, OP.LAUNCH_PROJECTILE]
+      .map((n) => ev('SET_VAR', { varId: p.variables[0].id, value: n }));
+    const on = Object.entries(compileProject(p).features).filter(([, v]) => v).map(([k]) => k);
+    assert(on.length === 0, `operand bytes no longer switch subsystems on (got ${on.join(', ') || 'none'})`);
+  }
+
+  {
+    // …while a game that really uses one still reports it.
+    const p = makeProject();
+    p.scenes[0].scripts.init = [ev('SET_LED', {}), makeEventOfType('SAVE_GAME')];
+    const f = compileProject(p).features;
+    assert(f.LED && f.SAVES, 'a game that really uses a subsystem still reports it');
+    assert(!f.PROJECTILES && !f.SWITCH, 'and does not report ones it never touches');
+  }
+
+  {
+    // Pruning: the remap is the risky half — a wrong index would silently draw
+    // the wrong art rather than fail, so check what survives points at the same
+    // pixels it did before.
+    const p = makeDemoProject();
+    const keptName = p.sprites[1].name;
+    p.sprites.push(makeSpriteOfType('NeverUsed', [p.sprites[0].frames[0]]));
+    p.tiles.push(makeTileOfType('NeverPainted', p.tiles[0].pixels));
+    const before = compileProject({ ...p, settings: { ...p.settings, pruneUnused: false } });
+    const after = compileProject(p);
+
+    assert(after.sprites.length < before.sprites.length, `pruning dropped sprites (${before.sprites.length} -> ${after.sprites.length})`);
+    assert(!after.sprites.some((s) => s.name === 'NeverUsed'), 'the unreferenced sprite is gone');
+    assert(!after.tiles.some((t) => t.name === 'NeverPainted'), 'the unpainted tile is gone');
+    assert(after.pruned.sprites.includes('NeverUsed'), 'and pruning says so rather than doing it silently');
+
+    // Every actor still draws the sprite it did before pruning renumbered them.
+    for (let s = 0; s < before.scenes.length; s++) {
+      for (let a = 0; a < before.scenes[s].actors.length; a++) {
+        const wasName = before.sprites[before.scenes[s].actors[a].spriteIdx].name;
+        const nowName = after.sprites[after.scenes[s].actors[a].spriteIdx].name;
+        assert(wasName === nowName, `scene ${s} actor ${a} still uses "${wasName}" after remapping (got "${nowName}")`);
+      }
+    }
+    // And the tilemaps still name the same tiles.
+    const sameTiles = before.scenes.every((sc, i) => sc.tiles.every((t, j) =>
+      before.tiles[t].name === after.tiles[after.scenes[i].tiles[j]].name));
+    assert(sameTiles, 'every painted tile still resolves to the same artwork');
+    assert(after.sprites.some((s) => s.name === keptName), 'a sprite in use survived');
+  }
+
+  {
+    // The player's sprite is a reference like any other and must follow the remap.
+    const p = makeDemoProject();
+    const playerName = p.sprites.find((s) => s.id === p.settings.playerSpriteId).name;
+    // Make an earlier sprite unused so indices shift.
+    p.sprites.unshift(makeSpriteOfType('Junk', [p.sprites[0].frames[0]]));
+    const c = compileProject(p);
+    assert(c.sprites[c.playerSpriteIdx].name === playerName,
+      `the player still points at "${playerName}" (got "${c.sprites[c.playerSpriteIdx].name}")`);
+  }
+
+  {
+    // "Always include" beats pruning.
+    const p = makeDemoProject();
+    const junk = makeSpriteOfType('KeepMe', [p.sprites[0].frames[0]]);
+    junk.keep = true;
+    p.sprites.push(junk);
+    const c = compileProject(p);
+    assert(c.sprites.some((s) => s.name === 'KeepMe'), 'a sprite ticked "always include" survives pruning');
+  }
+
+  {
+    // The global switch really switches.
+    const p = makeDemoProject();
+    p.sprites.push(makeSpriteOfType('NeverUsed', [p.sprites[0].frames[0]]));
+    p.settings.pruneUnused = false;
+    const c = compileProject(p);
+    assert(c.sprites.length === p.sprites.length, 'with pruning off every sprite ships');
+    assert(c.tiles.length === p.tiles.length, 'and every tile');
+    assert(!c.pruning && c.pruned.sprites.length === 0, 'and nothing is reported as dropped');
+  }
+
+  {
+    // A pruned game still plays exactly as it did — the real proof the remap is
+    // consistent across bytecode, actor tables and art.
+    const proj = makeDemoProject();
+    proj.sprites.push(makeSpriteOfType('Junk', [proj.sprites[0].frames[0]]));
+    const e = new Emulator(compileProject(proj), { onTone: () => {} });
+    for (let i = 0; i < 30; i++) { e.setButtons(0); e.step(); }
+    assert(e.sceneIdx === 0 && !!e.text, 'a pruned demo still boots and shows its intro');
+  }
+
+  {
+    // Older projects predate the setting and must still prune by default.
+    const p = makeDemoProject();
+    delete p.settings.pruneUnused;
+    assert(normalizeProject(p).settings.pruneUnused === true, 'a project without the setting prunes by default');
+    const off = makeDemoProject();
+    off.settings.pruneUnused = false;
+    assert(normalizeProject(off).settings.pruneUnused === false, 'and an explicit "off" is preserved');
+  }
+
+  {
+    // The estimate has to be believable, and must err high rather than low —
+    // a warning that comes too late is the whole problem being solved.
+    const c = compileProject(makeDemoProject());
+    assert(c.flash.total > c.flash.baseline, 'the estimate includes the game on top of the engine');
+    assert(c.flash.total === c.flash.baseline + c.flash.subsystemBytes + c.flash.dataBytes,
+      'the parts add up to the total');
+    assert(c.flash.budget === 28672, `the budget is the Arduboy's 28672 bytes (got ${c.flash.budget})`);
+    const sum = Object.values(c.flash.data).reduce((n, v) => n + v, 0);
+    assert(sum === c.flash.dataBytes, 'the data breakdown adds up to the data total');
   }
 }
 

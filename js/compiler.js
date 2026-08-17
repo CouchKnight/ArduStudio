@@ -6,12 +6,34 @@
 import {
   SCENE_W, SCENE_H, MAX_VARIABLES,
   sceneCols, sceneRows, buttonIndex, forEachEvent, MATH_OPS,
-  pixelsToBytes, sceneById, spriteById,
+  pixelsToBytes, sceneById, spriteById, sceneScripts,
   ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS, SCENE_SCRIPT_SLOTS, NON_BLOCKING_SLOTS,
   directionCode, effectCode, collisionGroupCode,
   PROJECTILE_DIRS, PROJECTILE_DIR_SOURCE, ACTOR_SPEEDS,
 } from './model.js';
 import { compileExpression, EX, MAX_EXPR_BYTES } from './expression.js';
+import { FLASH_BUDGET, FLASH_BASELINE, FLASH_SUBSYSTEM } from './flashCosts.js';
+
+// Which events switch each optional subsystem on, so the Export tab can say
+// "Projectiles, 1446 bytes, from 1 Launch Projectile" rather than leaving you to
+// work out what to remove. Keyed to the labels in EVENT_DEFS.
+const SUBSYSTEM_EVENTS = {
+  OVERLAY: ['Show Overlay', 'Hide Overlay', 'Overlay Move To', 'Set Overlay Scanline Cutoff', 'Draw Text'],
+  EXPR: ['If Math Expression', 'Loop While Math Expression', 'Evaluate Math Expression', 'Math Functions'],
+  SWITCH: ['Switch'],
+  SAVES: ['Save Game', 'Load Game', 'Save Exists → Var', 'Delete Save'],
+  SONGS: ['Play Song', 'Stop Song'],
+  MENUS: ['Display Menu', 'Display Multiple Choice'],
+  BUTTON_SCRIPTS: ['Attach Script To Button', 'Remove Button Script'],
+  SCENE_STACK: ['Push Scene', 'Pop Scene', 'Pop All Scenes'],
+  FADE: ['Fade In', 'Fade Out', 'Push Scene', 'Pop Scene', 'Pop All Scenes'],
+  LED: ['Set RGB LED'],
+  EFFECTS: ['Actor Effects'],
+  PROJECTILES: ['Launch Projectile'],
+  COLLISIONS: ['Launch Projectile', 'an actor with a collision group'],
+  UPDATE_SCRIPTS: ['an On Update script'],
+  TEXT_VARS: ['$name in on-screen text'],
+};
 
 export const OP = {
   END: 0,
@@ -311,14 +333,93 @@ export function compileProject(project) {
   project.scenes.forEach((s, i) => sceneIndex.set(s.id, i));
   if (project.scenes.length > 255) throw new Error('Too many scenes (max 255)');
 
+  // ------------------------------------------------------------ dead assets
+  //
+  // Art and music a game never refers to still costs flash, and on a 28 KB
+  // budget that matters. Work out what is actually reachable *before* compiling
+  // anything, so indices can be renumbered as they are written — the alternative
+  // would be rewriting operands inside finished bytecode, which means knowing
+  // where every operand sits.
+  //
+  // This only affects the exported game. The project keeps every asset and the
+  // editors are untouched.
+  const pruning = project.settings.pruneUnused !== false;
+
+  function collectReachable() {
+    const sprites = new Set();
+    const songIds = new Set();
+    const tileIdx = new Set();
+    const player = spriteById(project, project.settings.playerSpriteId);
+    if (player) sprites.add(player.id);
+    for (const scene of project.scenes) {
+      for (const t of scene.tiles) tileIdx.add(t | 0);
+      for (const a of scene.actors) if (a.spriteId) sprites.add(a.spriteId);
+      for (const { events } of sceneScripts(scene)) {
+        forEachEvent(events, (ev) => {
+          if (ev.type === 'SET_TILE') tileIdx.add(ev.tileIndex | 0);
+          else if (ev.type === 'PLAY_SONG' && ev.songId) songIds.add(ev.songId);
+          else if ((ev.type === 'SET_ACTOR_SPRITE' || ev.type === 'LAUNCH_PROJECTILE') && ev.spriteId) {
+            sprites.add(ev.spriteId);
+          }
+        });
+      }
+    }
+    return { sprites, songIds, tileIdx };
+  }
+
+  const reachable = collectReachable();
+  const pruned = { tiles: [], sprites: [], songs: [] };
+
+  // An asset survives if it is reachable, if it is ticked "always include", or
+  // if pruning is switched off entirely. Index 0 of the tiles and sprites lists
+  // is always kept: the runtimes fall back to it, and an empty list would be a
+  // far worse failure than a wasted eight bytes.
+  const keepAsset = (asset, isReachable, first) =>
+    !pruning || isReachable || asset.keep === true || first;
+
+  const keptTiles = project.tiles.filter((t, i) => {
+    const keep = keepAsset(t, reachable.tileIdx.has(i), i === 0);
+    if (!keep) pruned.tiles.push(t.name || `Tile ${i}`);
+    return keep;
+  });
+  const keptSprites = project.sprites.filter((s, i) => {
+    const keep = keepAsset(s, reachable.sprites.has(s.id), i === 0);
+    if (!keep) pruned.sprites.push(s.name || `Sprite ${i}`);
+    return keep;
+  });
+  const keptSongs = (project.songs || []).filter((s) => {
+    const keep = keepAsset(s, reachable.songIds.has(s.id), false);
+    if (!keep) pruned.songs.push(s.name || 'Song');
+    return keep;
+  });
+
+  // old index -> new index, for everything that names one.
+  const tileRemap = new Map();
+  keptTiles.forEach((t, i) => tileRemap.set(project.tiles.indexOf(t), i));
+  const spriteIndex = new Map();  // sprite id -> emitted index
+  keptSprites.forEach((s, i) => spriteIndex.set(s.id, i));
+  const mapTile = (i) => (tileRemap.has(i) ? tileRemap.get(i) : 0);
+
   const songIndex = new Map();
-  (project.songs || []).forEach((s, i) => songIndex.set(s.id, i));
+  keptSongs.forEach((s, i) => songIndex.set(s.id, i));
 
   const cols = (scene) => (scene ? sceneCols(scene) : SCENE_W);
   const rows = (scene) => (scene ? sceneRows(scene) : SCENE_H);
 
   const code = [];
   const emit = (...bytes) => { for (const b of bytes) code.push(b & 0xff); };
+  // Which opcodes the game actually contains. Recorded as instructions are
+  // emitted rather than by scanning the finished bytecode: an operand byte can
+  // hold any value, so scanning cannot tell "Set Variable to 20" from the
+  // SET_LED opcode, and every such collision used to switch a whole engine
+  // subsystem on for a game that never asked for it.
+  const usedOps = new Set();
+  const opCounts = new Map();
+  const emitOp = (op, ...rest) => {
+    usedOps.add(op);
+    opCounts.set(op, (opCounts.get(op) || 0) + 1);
+    emit(op, ...rest);
+  };
   const emitU16 = (v) => { code.push(v & 0xff, (v >> 8) & 0xff); };
 
   // Resolve an actor reference — "self", "player", or a scene actor id — to the
@@ -375,34 +476,34 @@ export function compileProject(project) {
       }
       switch (ev.type) {
         case 'TEXT':
-          emit(OP.TEXT, internString(ev.text || '', ctx));
+          emitOp(OP.TEXT, internString(ev.text || '', ctx));
           break;
         case 'SWITCH_SCENE': {
           const idx = sceneIndex.get(ev.sceneId);
           if (idx === undefined) { warnings.push(`${ctx}: Change Scene points at a missing scene — skipped`); break; }
           const target = project.scenes[idx];
-          emit(OP.SWITCH_SCENE, idx, clampTile(ev.x, sceneCols(target)), clampTile(ev.y, sceneRows(target)));
+          emitOp(OP.SWITCH_SCENE, idx, clampTile(ev.x, sceneCols(target)), clampTile(ev.y, sceneRows(target)));
           break;
         }
         case 'SET_VAR': {
           const idx = varIndex.get(ev.varId);
           if (idx === undefined) { warnings.push(`${ctx}: Set Variable has no variable selected — skipped`); break; }
-          emit(OP.SET_VAR, idx, byte(ev.value));
+          emitOp(OP.SET_VAR, idx, byte(ev.value));
           break;
         }
         case 'ADD_VAR': {
           const idx = varIndex.get(ev.varId);
           if (idx === undefined) { warnings.push(`${ctx}: Add To Variable has no variable selected — skipped`); break; }
-          emit(OP.ADD_VAR, idx, int8byte(ev.delta));
+          emitOp(OP.ADD_VAR, idx, int8byte(ev.delta));
           break;
         }
         case 'IF_VAR': {
           const idx = varIndex.get(ev.varId);
           if (idx === undefined) { warnings.push(`${ctx}: If Variable has no variable selected — skipped`); break; }
-          emit(OP.IF_VAR, idx, CMP[ev.cmp] ?? 0, byte(ev.value));
+          emitOp(OP.IF_VAR, idx, CMP[ev.cmp] ?? 0, byte(ev.value));
           const elsePatch = code.length; emitU16(0);
           compileEvents(ev.then, scene, ctx, nonBlocking);
-          emit(OP.JUMP);
+          emitOp(OP.JUMP);
           const endPatch = code.length; emitU16(0);
           patchU16(code, elsePatch, code.length);
           compileEvents(ev.else, scene, ctx, nonBlocking);
@@ -411,26 +512,26 @@ export function compileProject(project) {
         }
         case 'TONE': {
           const f = Math.max(16, Math.min(65535, Math.round(ev.freq) || 440));
-          emit(OP.TONE, f & 0xff, (f >> 8) & 0xff, byte(ev.frames || 15));
+          emitOp(OP.TONE, f & 0xff, (f >> 8) & 0xff, byte(ev.frames || 15));
           break;
         }
         case 'WAIT':
-          emit(OP.WAIT, byte(ev.frames || 1));
+          emitOp(OP.WAIT, byte(ev.frames || 1));
           break;
         case 'ACTOR_HIDE':
         case 'ACTOR_SHOW': {
           const op = ev.type === 'ACTOR_HIDE' ? OP.ACTOR_HIDE : OP.ACTOR_SHOW;
           const idx = actorTarget(ev, scene, ctx, `${ev.type === 'ACTOR_HIDE' ? 'Hide' : 'Show'} Actor`);
           if (idx < 0) break;
-          emit(op, idx);
+          emitOp(op, idx);
           break;
         }
         case 'SET_TILE':
-          emit(OP.SET_TILE, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)),
-            Math.max(0, Math.min(project.tiles.length - 1, ev.tileIndex | 0)));
+          emitOp(OP.SET_TILE, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)),
+            mapTile(Math.max(0, Math.min(project.tiles.length - 1, ev.tileIndex | 0))));
           break;
         case 'PLAYER_POS':
-          emit(OP.PLAYER_POS, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)));
+          emitOp(OP.PLAYER_POS, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)));
           break;
         case 'ACTOR_MOVE': {
           let idx = 0xff;
@@ -438,39 +539,39 @@ export function compileProject(project) {
             idx = scene ? scene.actors.findIndex((a) => a.id === ev.target) : -1;
             if (idx < 0) { warnings.push(`${ctx}: Move Actor target not in this scene — skipped`); break; }
           }
-          emit(OP.ACTOR_MOVE, idx, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)),
+          emitOp(OP.ACTOR_MOVE, idx, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)),
             ev.instant ? 1 : 0);
           break;
         }
         case 'PLAY_SONG': {
           const idx = songIndex.get(ev.songId);
           if (idx === undefined) { warnings.push(`${ctx}: Play Song has no song selected — skipped`); break; }
-          emit(OP.PLAY_SONG, idx, ev.loop ? 1 : 0);
+          emitOp(OP.PLAY_SONG, idx, ev.loop ? 1 : 0);
           break;
         }
         case 'STOP_SONG':
-          emit(OP.STOP_SONG);
+          emitOp(OP.STOP_SONG);
           break;
         case 'SAVE_GAME':
-          emit(OP.SAVE_GAME);
+          emitOp(OP.SAVE_GAME);
           break;
         case 'LOAD_GAME':
-          emit(OP.LOAD_GAME);
+          emitOp(OP.LOAD_GAME);
           break;
         case 'SAVE_CHECK': {
           const idx = varIndex.get(ev.varId);
           if (idx === undefined) { warnings.push(`${ctx}: Save Exists has no variable selected — skipped`); break; }
-          emit(OP.SAVE_CHECK, idx);
+          emitOp(OP.SAVE_CHECK, idx);
           break;
         }
         case 'DELETE_SAVE':
-          emit(OP.DELETE_SAVE);
+          emitOp(OP.DELETE_SAVE);
           break;
         case 'SET_LED':
           if (ev.mode === 'digital') {
-            emit(OP.SET_LED, 1, ev.dr ? 1 : 0, ev.dg ? 1 : 0, ev.db ? 1 : 0);
+            emitOp(OP.SET_LED, 1, ev.dr ? 1 : 0, ev.dg ? 1 : 0, ev.db ? 1 : 0);
           } else {
-            emit(OP.SET_LED, 0, byte(ev.r), byte(ev.g), byte(ev.b));
+            emitOp(OP.SET_LED, 0, byte(ev.r), byte(ev.g), byte(ev.b));
           }
           break;
         case 'MENU': {
@@ -482,7 +583,7 @@ export function compileProject(project) {
           if (ev.lastIsZero) flags |= MENU_LAST_IS_ZERO;
           if (ev.cancelB) flags |= MENU_CANCEL_B;
           if (ev.layout === 'dialogue') flags |= MENU_LAYOUT_DIALOGUE;
-          emit(OP.MENU, idx, opts.length, flags);
+          emitOp(OP.MENU, idx, opts.length, flags);
           for (const label of opts) {
             if (displayWidth(substituteVars(String(label), ctx)) > MENU_LABEL_MAX_CHARS) {
               warnings.push(`${ctx}: menu option "${label}" is wider than ${MENU_LABEL_MAX_CHARS} characters and will be clipped on screen`);
@@ -494,9 +595,9 @@ export function compileProject(project) {
         case 'SET_ACTOR_SPRITE': {
           const idx = actorTarget(ev, scene, ctx, 'Set Actor Sprite');
           if (idx < 0) break;
-          const spriteIdx = project.sprites.findIndex((s) => s.id === ev.spriteId);
+          const spriteIdx = spriteIndex.has(ev.spriteId) ? spriteIndex.get(ev.spriteId) : -1;
           if (spriteIdx < 0) { warnings.push(`${ctx}: Set Actor Sprite has no sprite selected — skipped`); break; }
-          emit(OP.SET_ACTOR_SPRITE, idx, spriteIdx);
+          emitOp(OP.SET_ACTOR_SPRITE, idx, spriteIdx);
           break;
         }
         case 'ATTACH_SCRIPT': {
@@ -506,25 +607,25 @@ export function compileProject(project) {
           }
           const btn = buttonIndex(ev.button);
           const scriptIdx = addScript(ev.script, scene, `${ctx} → ${ev.button.toUpperCase()} button script`);
-          emit(OP.ATTACH_SCRIPT, btn, ev.override ? ATTACH_OVERRIDE : 0, scriptIdx);
+          emitOp(OP.ATTACH_SCRIPT, btn, ev.override ? ATTACH_OVERRIDE : 0, scriptIdx);
           break;
         }
         case 'REMOVE_BUTTON_SCRIPT':
-          emit(OP.REMOVE_BUTTON_SCRIPT, buttonIndex(ev.button));
+          emitOp(OP.REMOVE_BUTTON_SCRIPT, buttonIndex(ev.button));
           break;
         case 'WAIT_INPUT': {
           const mask = byte(ev.mask) & 0x3f;
           if (!mask) { warnings.push(`${ctx}: Pause Script Until Input Pressed has no buttons selected — skipped`); break; }
-          emit(OP.WAIT_INPUT, mask);
+          emitOp(OP.WAIT_INPUT, mask);
           break;
         }
         case 'IF_INPUT': {
           const mask = byte(ev.mask) & 0x3f;
           if (!mask) { warnings.push(`${ctx}: If Joypad Input Held has no buttons selected — skipped`); break; }
-          emit(OP.IF_INPUT, mask);
+          emitOp(OP.IF_INPUT, mask);
           const elsePatch = code.length; emitU16(0);
           compileEvents(ev.then, scene, ctx, nonBlocking);
-          emit(OP.JUMP);
+          emitOp(OP.JUMP);
           const endPatch = code.length; emitU16(0);
           patchU16(code, elsePatch, code.length);
           compileEvents(ev.else, scene, ctx, nonBlocking);
@@ -541,7 +642,7 @@ export function compileProject(project) {
               warnings.push(`${ctx}: choice option "${label}" is wider than ${MENU_LABEL_MAX_CHARS} characters and will be clipped on screen`);
             }
           }
-          emit(OP.MENU, idx, 2, MENU_LAST_IS_ZERO | MENU_LAYOUT_DIALOGUE);
+          emitOp(OP.MENU, idx, 2, MENU_LAST_IS_ZERO | MENU_LAYOUT_DIALOGUE);
           emit(internRaw(ev.trueLabel, ctx));
           emit(internRaw(ev.falseLabel, ctx));
           break;
@@ -549,7 +650,7 @@ export function compileProject(project) {
         case 'SET_ACTOR_DIR': {
           const idx = actorTarget(ev, scene, ctx, 'Set Actor Direction');
           if (idx < 0) break;
-          emit(OP.SET_ACTOR_DIR, idx, directionCode(ev.direction));
+          emitOp(OP.SET_ACTOR_DIR, idx, directionCode(ev.direction));
           break;
         }
         case 'SET_ACTOR_SPEED': {
@@ -563,17 +664,17 @@ export function compileProject(project) {
             break;
           }
           const speed = ACTOR_SPEEDS.some((s) => s.value === ev.speed) ? ev.speed : 1;
-          emit(OP.SET_ACTOR_SPEED, idx, speed);
+          emitOp(OP.SET_ACTOR_SPEED, idx, speed);
           break;
         }
         case 'ACTOR_EFFECT': {
           const idx = actorTarget(ev, scene, ctx, 'Actor Effects');
           if (idx < 0) break;
-          emit(OP.ACTOR_EFFECT, idx, effectCode(ev.effect), byte(ev.frames || 30));
+          emitOp(OP.ACTOR_EFFECT, idx, effectCode(ev.effect), byte(ev.frames || 30));
           break;
         }
         case 'LAUNCH_PROJECTILE': {
-          const spriteIdx = project.sprites.findIndex((s) => s.id === ev.spriteId);
+          const spriteIdx = spriteIndex.has(ev.spriteId) ? spriteIndex.get(ev.spriteId) : -1;
           if (spriteIdx < 0) { warnings.push(`${ctx}: Launch Projectile has no sprite selected — skipped`); break; }
           let src = PROJECTILE_SRC_SELF;
           if (ev.source === 'player') src = PROJECTILE_SRC_PLAYER;
@@ -589,36 +690,36 @@ export function compileProject(project) {
           }
           const speed = Math.max(1, Math.min(8, ev.speed | 0 || 2));
           const life = Math.max(1, Math.min(255, ev.life | 0 || 60));
-          emit(OP.LAUNCH_PROJECTILE, src, spriteIdx, dir, speed, life, byte(ev.collideWith) & 0x0f);
+          emitOp(OP.LAUNCH_PROJECTILE, src, spriteIdx, dir, speed, life, byte(ev.collideWith) & 0x0f);
           break;
         }
         case 'PUSH_SCENE': {
           const idx = sceneIndex.get(ev.sceneId);
           if (idx === undefined) { warnings.push(`${ctx}: Push Scene points at a missing scene — skipped`); break; }
           const target = project.scenes[idx];
-          emit(OP.PUSH_SCENE, idx, clampTile(ev.x, sceneCols(target)), clampTile(ev.y, sceneRows(target)),
+          emitOp(OP.PUSH_SCENE, idx, clampTile(ev.x, sceneCols(target)), clampTile(ev.y, sceneRows(target)),
             fadeSpeed(ev.fade));
           break;
         }
         case 'POP_SCENE':
-          emit(OP.POP_SCENE, fadeSpeed(ev.fade));
+          emitOp(OP.POP_SCENE, fadeSpeed(ev.fade));
           break;
         case 'POP_ALL_SCENES':
-          emit(OP.POP_ALL_SCENES, fadeSpeed(ev.fade));
+          emitOp(OP.POP_ALL_SCENES, fadeSpeed(ev.fade));
           break;
         case 'FADE_IN':
-          emit(OP.FADE_IN, fadeSpeed(ev.fade));
+          emitOp(OP.FADE_IN, fadeSpeed(ev.fade));
           break;
         case 'FADE_OUT':
-          emit(OP.FADE_OUT, fadeSpeed(ev.fade));
+          emitOp(OP.FADE_OUT, fadeSpeed(ev.fade));
           break;
         case 'IF_ACTOR_AT': {
           const idx = actorTarget(ev, scene, ctx, 'If Actor At Position');
           if (idx < 0) break;
-          emit(OP.IF_ACTOR_AT, idx, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)));
+          emitOp(OP.IF_ACTOR_AT, idx, clampTile(ev.x, cols(scene)), clampTile(ev.y, rows(scene)));
           const elsePatch = code.length; emitU16(0);
           compileEvents(ev.then, scene, ctx, nonBlocking);
-          emit(OP.JUMP);
+          emitOp(OP.JUMP);
           const endPatch = code.length; emitU16(0);
           patchU16(code, elsePatch, code.length);
           compileEvents(ev.else, scene, ctx, nonBlocking);
@@ -634,10 +735,10 @@ export function compileProject(project) {
           // preserved because a distance is never negative.
           const d = Math.max(0, Math.min(MAX_ACTOR_DISTANCE, ev.distance | 0));
           const dSq = d * d;
-          emit(OP.IF_ACTOR_DISTANCE, idx, CMP[ev.cmp] ?? 0, dSq & 0xff, (dSq >> 8) & 0xff, from);
+          emitOp(OP.IF_ACTOR_DISTANCE, idx, CMP[ev.cmp] ?? 0, dSq & 0xff, (dSq >> 8) & 0xff, from);
           const elsePatch = code.length; emitU16(0);
           compileEvents(ev.then, scene, ctx, nonBlocking);
-          emit(OP.JUMP);
+          emitOp(OP.JUMP);
           const endPatch = code.length; emitU16(0);
           patchU16(code, elsePatch, code.length);
           compileEvents(ev.else, scene, ctx, nonBlocking);
@@ -649,7 +750,7 @@ export function compileProject(project) {
           if (idx < 0) break;
           const v = varIndex.get(ev.varId);
           if (v === undefined) { warnings.push(`${ctx}: Store Actor Direction has no variable selected — skipped`); break; }
-          emit(OP.STORE_ACTOR_DIR, idx, v);
+          emitOp(OP.STORE_ACTOR_DIR, idx, v);
           break;
         }
         case 'STORE_ACTOR_POS': {
@@ -664,7 +765,7 @@ export function compileProject(project) {
           if (vx === vy) {
             warnings.push(`${ctx}: Store Actor Position writes X and Y into the same variable — Y will overwrite X`);
           }
-          emit(OP.STORE_ACTOR_POS, idx, vx, vy);
+          emitOp(OP.STORE_ACTOR_POS, idx, vx, vy);
           break;
         }
         case 'EXPR_SET': {
@@ -672,7 +773,7 @@ export function compileProject(project) {
           if (idx === undefined) { warnings.push(`${ctx}: Evaluate Math Expression has no variable selected — skipped`); break; }
           const expr = compileExpr(ev.expression, ctx, 'Evaluate Math Expression');
           if (!expr) break;
-          emit(OP.EXPR_SET, idx, expr.length, ...expr);
+          emitOp(OP.EXPR_SET, idx, expr.length, ...expr);
           break;
         }
         case 'MATH_FN': {
@@ -704,16 +805,16 @@ export function compileProject(project) {
             ? operand
             : [EX.PUSH_VAR, idx, ...operand, BINOP[ev.op]];
           if (expr.length > MAX_EXPR_BYTES) { warnings.push(`${ctx}: Math Functions is too complex — skipped`); break; }
-          emit(OP.EXPR_SET, idx, expr.length, ...expr);
+          emitOp(OP.EXPR_SET, idx, expr.length, ...expr);
           break;
         }
         case 'EXPR_IF': {
           const expr = compileExpr(ev.expression, ctx, 'If Math Expression');
           if (!expr) break;
-          emit(OP.EXPR_IF, expr.length, ...expr);
+          emitOp(OP.EXPR_IF, expr.length, ...expr);
           const elsePatch = code.length; emitU16(0);
           compileEvents(ev.then, scene, ctx, nonBlocking);
-          emit(OP.JUMP);
+          emitOp(OP.JUMP);
           const endPatch = code.length; emitU16(0);
           patchU16(code, elsePatch, code.length);
           compileEvents(ev.else, scene, ctx, nonBlocking);
@@ -724,10 +825,10 @@ export function compileProject(project) {
           const expr = compileExpr(ev.expression, ctx, 'Loop While Math Expression');
           if (!expr) break;
           const top = code.length;
-          emit(OP.EXPR_LOOP, expr.length, ...expr);
+          emitOp(OP.EXPR_LOOP, expr.length, ...expr);
           const endPatch = code.length; emitU16(0);
           compileEvents(ev.events, scene, ctx, nonBlocking);
-          emit(OP.JUMP);
+          emitOp(OP.JUMP);
           emitU16(top); // back to re-test the condition
           patchU16(code, endPatch, code.length);
           break;
@@ -742,12 +843,12 @@ export function compileProject(project) {
           }
           const top = code.length;
           compileEvents(ev.events, scene, ctx, nonBlocking);
-          emit(OP.JUMP);
+          emitOp(OP.JUMP);
           emitU16(top);
           break;
         }
         case 'SEED_RNG':
-          emit(OP.SEED_RNG);
+          emitOp(OP.SEED_RNG);
           break;
         case 'SWITCH': {
           const v = varIndex.get(ev.varId);
@@ -763,7 +864,7 @@ export function compileProject(project) {
             seen.add(value);
           }
           // A jump table: constant-time, and smaller than a chain of compares.
-          emit(OP.SWITCH, v, cases.length);
+          emitOp(OP.SWITCH, v, cases.length);
           const casePatches = [];
           for (const c of cases) {
             emit(byte(c.value));
@@ -775,7 +876,7 @@ export function compileProject(project) {
           cases.forEach((c, i) => {
             patchU16(code, casePatches[i], code.length);
             compileEvents(c.events, scene, ctx, nonBlocking);
-            emit(OP.JUMP);
+            emitOp(OP.JUMP);
             endPatches.push(code.length);
             emitU16(0);
           });
@@ -787,14 +888,14 @@ export function compileProject(project) {
         case 'SET_ANIM_FRAME': {
           const idx = actorTarget(ev, scene, ctx, 'Set Actor Animation Frame');
           if (idx < 0) break;
-          emit(OP.SET_ANIM_FRAME, idx, byte(ev.frame));
+          emitOp(OP.SET_ANIM_FRAME, idx, byte(ev.frame));
           break;
         }
         case 'SET_ANIM_SPEED': {
           const idx = actorTarget(ev, scene, ctx, 'Set Actor Animation Speed');
           if (idx < 0) break;
           const speed = ANIM_SPEEDS.some((s) => s.value === ev.speed) ? ev.speed : 20;
-          emit(OP.SET_ANIM_SPEED, idx, speed);
+          emitOp(OP.SET_ANIM_SPEED, idx, speed);
           break;
         }
         case 'SET_ANIM_STATE': {
@@ -804,30 +905,30 @@ export function compileProject(project) {
           // is resolved by position within that sprite's state list.
           const stateIdx = spriteStateIndex(ev, scene, idx, ctx);
           if (stateIdx < 0) break;
-          emit(OP.SET_ANIM_STATE, idx, stateIdx, ev.loop ? 1 : 0);
+          emitOp(OP.SET_ANIM_STATE, idx, stateIdx, ev.loop ? 1 : 0);
           break;
         }
         case 'SHOW_OVERLAY':
-          emit(OP.SHOW_OVERLAY, ev.fill === 'white' ? 1 : 0,
+          emitOp(OP.SHOW_OVERLAY, ev.fill === 'white' ? 1 : 0,
             clampByte(ev.x, 0, SCENE_W), clampByte(ev.y, 0, SCENE_H));
           break;
         case 'HIDE_OVERLAY':
-          emit(OP.HIDE_OVERLAY);
+          emitOp(OP.HIDE_OVERLAY);
           break;
         case 'OVERLAY_MOVE': {
           const speed = OVERLAY_SPEEDS.some((s) => s.value === ev.speed) ? ev.speed : 1;
-          emit(OP.OVERLAY_MOVE, clampByte(ev.x, 0, SCENE_W), clampByte(ev.y, 0, SCENE_H), speed);
+          emitOp(OP.OVERLAY_MOVE, clampByte(ev.x, 0, SCENE_W), clampByte(ev.y, 0, SCENE_H), speed);
           break;
         }
         case 'OVERLAY_CUTOFF':
-          emit(OP.OVERLAY_CUTOFF, clampByte(ev.y, 0, 64));
+          emitOp(OP.OVERLAY_CUTOFF, clampByte(ev.y, 0, 64));
           break;
         case 'DRAW_TEXT': {
           const text = String(ev.text || '');
           if (!text) { warnings.push(`${ctx}: Draw Text has no text — skipped`); break; }
           // Drawn text is positioned by hand, so it must not be word-wrapped
           // the way dialogue is; it shares the string table all the same.
-          emit(OP.DRAW_TEXT, internRaw(text, ctx),
+          emitOp(OP.DRAW_TEXT, internRaw(text, ctx),
             clampByte(ev.x, 0, 255), clampByte(ev.y, 0, 255),
             ev.location === 'overlay' ? DRAW_TEXT_OVERLAY : DRAW_TEXT_BACKGROUND);
           break;
@@ -849,7 +950,7 @@ export function compileProject(project) {
             warnings.push(`${ctx}: Start Script points at an empty script — skipped`);
             break;
           }
-          emit(OP.START_SCRIPT);
+          emitOp(OP.START_SCRIPT);
           emitU16(ref.idx);
           emit(ref.self);
           break;
@@ -858,7 +959,7 @@ export function compileProject(project) {
           compileEvents(ev.events, scene, ctx, nonBlocking);
           break;
         case 'END_SCRIPT':
-          emit(OP.END);
+          emitOp(OP.END);
           break;
         default:
           warnings.push(`${ctx}: unknown event ${ev.type} — skipped`);
@@ -887,7 +988,7 @@ export function compileProject(project) {
       scriptOffsets[job.idx] = code.length;
       ownerActor = job.owner || null;
       compileEvents(job.events, job.scene, job.ctx, job.nonBlocking);
-      emit(OP.END);
+      emitOp(OP.END);
     }
     ownerActor = null;
   }
@@ -920,7 +1021,7 @@ export function compileProject(project) {
     const sceneSlots = addSlots(scene, SCENE_SCRIPT_SLOTS, scene, `Scene "${scene.name}"`, null, 'scene');
     const actors = scene.actors.map((a, ai) => {
       const sprite = spriteById(project, a.spriteId);
-      let spriteIdx = project.sprites.indexOf(sprite);
+      let spriteIdx = spriteIndex.has(a.spriteId) ? spriteIndex.get(a.spriteId) : -1;
       if (spriteIdx < 0) { warnings.push(`Actor "${a.name}" ${where} has no sprite — using sprite 0`); spriteIdx = 0; }
       const slots = addSlots(a, ACTOR_SCRIPT_SLOTS, scene, `Actor "${a.name}" ${where}`, a, a.id, ai);
       const group = collisionGroupCode(a.collisionGroup);
@@ -951,7 +1052,7 @@ export function compileProject(project) {
     }));
     return {
       name: scene.name, index: si, cols: cw, rows: ch,
-      tiles: scene.tiles.slice(), actors, triggers, scripts: sceneSlots,
+      tiles: scene.tiles.map(mapTile), actors, triggers, scripts: sceneSlots,
     };
   });
 
@@ -959,13 +1060,13 @@ export function compileProject(project) {
 
   if (code.length > 0xfffe) throw new Error('Compiled scripts exceed 64KB');
 
-  const tiles = project.tiles.map((t) => ({
+  const tiles = keptTiles.map((t) => ({
     name: t.name,
     solid: !!t.solid,
     bytes: pixelsToBytes(t.pixels, 8, 8),
   }));
 
-  const sprites = project.sprites.map((s) => ({
+  const sprites = keptSprites.map((s) => ({
     name: s.name,
     width: s.width,
     height: s.height,
@@ -977,7 +1078,7 @@ export function compileProject(project) {
     })),
   }));
 
-  const songs = (project.songs || []).map((s) => ({
+  const songs = keptSongs.map((s) => ({
     name: s.name,
     notes: s.notes.map((n) => ({ f: n.f, d: n.d })),
   }));
@@ -985,7 +1086,6 @@ export function compileProject(project) {
   // Which optional engine subsystems this game actually uses. The generated
   // sketch guards each one, so a game pays flash and RAM only for what it
   // scripts — the ATmega32u4's ~28 KB does not stretch to everything at once.
-  const usedOps = new Set(code);
   const uses = (...ops) => ops.some((op) => usedOps.has(op));
   const features = {
     OVERLAY: uses(OP.SHOW_OVERLAY, OP.HIDE_OVERLAY, OP.OVERLAY_MOVE, OP.OVERLAY_CUTOFF, OP.DRAW_TEXT),
@@ -1007,9 +1107,49 @@ export function compileProject(project) {
     UPDATE_SCRIPTS: scenes.some((sc) => sc.actors.some((a) => a.scripts.update !== NO_SCRIPT)),
   };
 
+  // ------------------------------------------------------------ flash budget
+  //
+  // What this game will occupy once compiled, so the Export tab can say so
+  // before the Arduino IDE does. The engine half comes from a measured table
+  // (tools/measure_flash.mjs); the data half is exact, since every array below
+  // lands in flash byte for byte.
+  const dataBreakdown = {
+    'Script bytecode': code.length,
+    Strings: strings.reduce((n, str) => n + str.length + 1, 0) + strings.length * 2,
+    'Scene tilemaps': scenes.reduce((n, sc) => n + sc.tiles.length, 0),
+    Tileset: tiles.length * 8 + Math.ceil(tiles.length / 8),
+    Sprites: sprites.reduce((n, sp) => n + sp.frames.reduce((m, f) => m + f.length, 0), 0)
+      + sprites.length * 7,
+    Songs: songs.reduce((n, sg) => n + sg.notes.length * 4 + 4, 0),
+    'Scene / actor tables': scenes.reduce((n, sc) => n + 12 + sc.actors.length * 14 + sc.triggers.length * 8, 0)
+      + scriptOffsets.length * 2,
+  };
+  const dataBytes = Object.values(dataBreakdown).reduce((n, v) => n + v, 0);
+
+  const subsystems = Object.entries(features)
+    .filter(([, on]) => on)
+    .map(([name]) => ({
+      name,
+      bytes: FLASH_SUBSYSTEM[name] || 0,
+      from: SUBSYSTEM_EVENTS[name] || [],
+    }))
+    .sort((a, b) => b.bytes - a.bytes);
+
+  const flash = {
+    budget: FLASH_BUDGET,
+    baseline: FLASH_BASELINE,
+    subsystems,
+    subsystemBytes: subsystems.reduce((n, x) => n + x.bytes, 0),
+    data: dataBreakdown,
+    dataBytes,
+  };
+  flash.total = flash.baseline + flash.subsystemBytes + flash.dataBytes;
+  flash.over = flash.total - flash.budget;
+
   const startScene = sceneIndex.get(project.settings.startSceneId) ?? 0;
   const startSceneObj = project.scenes[startScene];
-  const playerSpriteIdx = Math.max(0, project.sprites.indexOf(spriteById(project, project.settings.playerSpriteId)));
+  const playerSpriteIdx = Math.max(0, spriteIndex.has(project.settings.playerSpriteId)
+    ? spriteIndex.get(project.settings.playerSpriteId) : 0);
 
   return {
     name: project.name,
@@ -1028,6 +1168,11 @@ export function compileProject(project) {
     startY: clampTile(project.settings.startY, rows(startSceneObj)),
     playerSpriteIdx,
     features,
+    // What pruning removed, so the Export tab can say so rather than assets
+    // quietly vanishing from the build.
+    pruned,
+    pruning,
+    flash,
     warnings,
   };
 }
