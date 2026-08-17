@@ -441,6 +441,31 @@ the title bar shows the open filename.</p>
 for driver/port help. The generated sketch needs only <b>Arduboy2</b> and <b>ArduboyTones</b>;
 save games use the AVR's built-in EEPROM.</p>
 
+<h2>Sharing a game: the .arduboy package</h2>
+<p>A <b>.arduboy</b> file is what loaders and emulators install — a zip holding the compiled
+binary, a <code>info.json</code> describing the game, and a title image. It is the format to
+hand someone else, where the <code>.ino</code> is the format to compile.</p>
+<p><b>ArduStudio cannot compile the sketch itself</b> — that needs a C++ compiler, which a
+browser does not have — so the binary has to come from one build in the Arduino IDE:</p>
+<ol>
+  <li>Export and open the <code>.ino</code>, then choose <b>Sketch → Export Compiled Binary</b>.
+      The IDE writes a <code>.hex</code> next to your sketch.</li>
+  <li>Back in the <b>Export</b> tab, fill in <i>Version</i> and pick a <i>Genre</i>, then
+      <b>Choose compiled .hex…</b> and point at that file.</li>
+  <li><b>Export .arduboy</b>.</li>
+</ol>
+<p>The <i>Name</i>, <i>Author</i> and <i>Version</i> are all required by the format and cannot be
+blank — the exporter says which one is missing rather than writing a package a loader would
+reject. The chosen <code>.hex</code> is checked as you pick it, so a wrong file (the
+<code>.ino</code>, a truncated download) is caught immediately.</p>
+<p>The <b>title image</b> is taken from your game's own opening screen, so it always matches what
+the player sees. Replace it with your own PNG if you would rather.</p>
+<p class="hint">A game that uses <b>Save Game</b> also records which EEPROM bytes it owns
+(16–52), which is what lets a loader back your saves up and put them back. A game with no save
+events claims nothing, because it writes nothing.</p>
+<p class="hint">Working from the repository instead? <code>npm run build:arduboy</code> compiles
+with the real AVR toolchain and writes a finished package in one step, no manual compile.</p>
+
 <h2>Limits (per project)</h2>
 <table>
   <tr><td>Scenes</td><td>up to 255 (flash-bound in practice; a scene ≈ 150–400 bytes)</td></tr>

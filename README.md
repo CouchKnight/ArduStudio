@@ -11,7 +11,7 @@ the hardware.
 ### Three ways to run it
 
 **1. Portable single file (offline, no install) — the recommended way.** Build
-`dist/ArduStudio.html` — the whole app in one ~215 KB file. Double-click it; it works offline in
+`dist/ArduStudio.html` — the whole app in one ~420 KB file. Double-click it; it works offline in
 any browser, makes zero network requests, and needs no server. In **Chrome and Edge it gets real
 native Save/Open dialogs** (the File System Access API works on `file://` pages), so Save writes
 straight back to the same file just like a desktop app:
@@ -55,7 +55,7 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 | **Variables** | Central manager for all 32 byte variables, with live usage tracking showing every script that reads, writes or prints each one. Renaming carries `$name` references in text and expressions along with it. |
 | **Image Tool** | PNG → 1-bit converter (threshold + invert). Import as tiles or a sprite, or copy a `PROGMEM` C array in the standard Arduboy vertical-byte format. |
 | **▶ Play** | Full play-test emulator at 60 fps with sound and a live variable watch. Runs the *same bytecode* as the exported game and renders text with the genuine Arduboy2 `font5x7`. |
-| **Export** | One click → complete `.ino` sketch. Also project save/load as JSON (plus localStorage autosave). |
+| **Export** | One click → complete `.ino` sketch, or a shareable **`.arduboy` package** (binary + metadata + a title image taken from your game). Also project save/load as JSON (plus localStorage autosave). |
 | **Help** | The manual: workflow, scripting recipes, flashing instructions, limits. |
 
 ![Audio tab](docs/shot_audio.png)
@@ -216,6 +216,32 @@ usable flash and 2,560 bytes of RAM:
 The optional subsystems come to about 3.4 KB of flash in total, so a game reaching for all of
 them has roughly 1.9 KB left for its own scenes and art.
 
+## Sharing a game: the `.arduboy` package
+
+A `.arduboy` is what loaders and emulators install — a zip holding the compiled binary, an
+`info.json` describing the game, and a title image. ArduStudio cannot compile the sketch itself
+(a browser has no C++ compiler), so the binary comes from one build in the Arduino IDE:
+
+1. Open the exported `.ino` and choose **Sketch → Export Compiled Binary**.
+2. In the **Export** tab, set *Version* and *Genre*, pick that `.hex`, and press
+   **Export .arduboy**.
+
+`Name`, `Author` and `Version` are required by the format and cannot be blank; the exporter names
+the missing one rather than writing a package a loader would reject. The `.hex` is validated as
+you pick it, so choosing the wrong file is caught immediately. The title image is rendered from
+your game's own opening screen, and can be replaced with your own PNG.
+
+A game that uses `Save Game` also declares the EEPROM bytes it owns (16–52), which is what lets a
+loader back saves up and restore them; a game without save events declares nothing.
+
+From the repository, one command does the whole thing including the compile:
+
+```bash
+npm run build:arduboy          # → <Game>.arduboy, via the real AVR toolchain
+```
+
+The package follows [schema version 2](https://github.com/Team-ARG-Museum/arduboy-file-format).
+
 ## Offline / desktop builds
 
 `tools/build_offline.mjs` uses esbuild to bundle the ES-module sources into a single IIFE and
@@ -264,8 +290,8 @@ localStorage and can be saved to / loaded from JSON files.
 8-deep scene stack · 3 collision groups plus the player ·
 scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene.
 
-Roadmap ideas: ArduboyFX data export for asset-heavy games, multiple save slots, `.arduboy` package
-export, two-channel music.
+Roadmap ideas: ArduboyFX data export for asset-heavy games, multiple save slots,
+two-channel music.
 
 ## References
 

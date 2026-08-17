@@ -866,6 +866,11 @@ export function makeProject(name = 'Untitled Game') {
       startY: 4,
       playerSpriteId: sprites[0].id,
       textSpeed: 2, // chars per frame in dialogue
+      // .arduboy package metadata. The format requires a non-empty version, and
+      // its genre is a fixed enum rather than free text.
+      version: '1.0',
+      genre: 'Misc',
+      description: '',
     },
     variables: [
       { id: uid('var'), name: 'has_key' },
@@ -1117,5 +1122,9 @@ export function normalizeProject(p) {
   if (!spriteById(p, p.settings.playerSpriteId) && p.sprites[0]) {
     p.settings.playerSpriteId = p.sprites[0].id;
   }
+  // Projects saved before .arduboy export existed carry none of its metadata.
+  if (typeof p.settings.version !== 'string' || !p.settings.version.trim()) p.settings.version = '1.0';
+  if (typeof p.settings.genre !== 'string') p.settings.genre = 'Misc';
+  if (typeof p.settings.description !== 'string') p.settings.description = '';
   return p;
 }

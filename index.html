@@ -211,6 +211,40 @@
         <div id="expWarnings" class="warnings"></div>
       </div>
       <div class="panel">
+        <div class="panel-title">Arduboy package (.arduboy)</div>
+        <p class="hint">
+          A <b>.arduboy</b> is what loaders and emulators install: a zip holding the compiled
+          binary, this metadata and a title image. ArduStudio cannot compile the sketch itself,
+          so build the <code>.ino</code> above in the Arduino IDE with
+          <b>Sketch → Export Compiled Binary</b>, then pick the resulting <code>.hex</code> here.
+        </p>
+        <div class="form-row">
+          <label>Version <input type="text" id="expVersion" size="6"></label>
+          <label>Genre <select id="expGenre"></select></label>
+        </div>
+        <div class="form-row">
+          <label style="flex:1 1 100%">Description <input type="text" id="expDescription"></label>
+        </div>
+        <div class="form-row">
+          <button id="expPickHex" class="btn">📄 Choose compiled .hex…</button>
+          <input type="file" id="expHexFile" accept=".hex" hidden>
+          <span id="expHexStatus" class="hint">No .hex chosen yet.</span>
+        </div>
+        <div class="form-row">
+          <canvas id="expBanner" width="128" height="64" class="banner-preview"></canvas>
+          <div>
+            <div class="hint">Title image, taken from your game's opening screen.</div>
+            <button id="expPickBanner" class="btn">Use my own PNG…</button>
+            <button id="expResetBanner" class="btn">Regenerate from game</button>
+            <input type="file" id="expBannerFile" accept="image/png" hidden>
+          </div>
+        </div>
+        <div class="form-row">
+          <button id="expArduboy" class="btn primary">📦 Export .arduboy</button>
+          <span id="expPkgStatus" class="hint"></span>
+        </div>
+      </div>
+      <div class="panel">
         <div class="panel-title">Project file</div>
         <div class="form-row">
           <button id="expSave" class="btn">💾 Save project</button>
