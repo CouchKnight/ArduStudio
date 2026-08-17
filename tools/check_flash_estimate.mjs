@@ -11,11 +11,12 @@
 //
 // Usage: node tools/check_flash_estimate.mjs
 
-import { execFileSync } from 'node:child_process';
-import { readdirSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { requireObjects, makeFlashMeasurer } from './avr_build.mjs';
 
 import { makeDemoProject } from '../js/model.js';
 import { makeAllFeaturesProject } from './all_features_project.mjs';
@@ -30,31 +31,9 @@ const work = mkdtempSync(join(tmpdir(), 'ardustudio-est-'));
 // err high: warning too late is the failure this whole feature exists to stop.
 const TOLERANCE = 0.05;
 
-if (!existsSync(join(OUT, 'obj'))) {
-  console.error('No build-avr/obj — run tools/build_avr.sh once first.');
-  process.exit(1);
-}
-
-const CFLAGS = [
-  '-c', '-g', '-Os', '-w', '-ffunction-sections', '-fdata-sections',
-  '-mmcu=atmega32u4', '-DF_CPU=16000000L', '-DARDUINO=10819',
-  '-DARDUINO_AVR_LEONARDO', '-DARDUINO_ARCH_AVR', '-DUSB_VID=0x2341', '-DUSB_PID=0x8036',
-  `-I${join(OUT, 'core')}`, `-I${join(OUT, 'ab2')}`, `-I${join(OUT, 'tones')}`,
-];
-const fixedObjects = readdirSync(join(OUT, 'obj'))
-  .filter((f) => f.endsWith('.o') && f !== 'sketch.cpp.o')
-  .map((f) => join(OUT, 'obj', f));
-
-function realFlash(label, project) {
-  const cpp = join(work, `${label}.cpp`);
-  writeFileSync(cpp, generateIno(project).ino);
-  execFileSync('avr-g++', [...CFLAGS, '-std=gnu++11', '-fpermissive', '-fno-exceptions',
-    '-fno-threadsafe-statics', cpp, '-o', join(work, `${label}.o`)], { stdio: 'pipe' });
-  execFileSync('avr-gcc', ['-w', '-Os', '-g', '-Wl,--gc-sections', '-mmcu=atmega32u4',
-    '-o', join(work, `${label}.elf`), join(work, `${label}.o`), ...fixedObjects, '-lm'], { stdio: 'pipe' });
-  const size = execFileSync('avr-size', [join(work, `${label}.elf`)], { encoding: 'utf8' });
-  return parseInt(size.trim().split('\n')[1].trim().split(/\s+/)[0], 10);
-}
+requireObjects(OUT);
+const measure = makeFlashMeasurer(OUT, work);
+const realFlash = (label, project) => measure(label, generateIno(project).ino);
 
 let failed = false;
 for (const [label, project] of [['demo', makeDemoProject()], ['all-features', makeAllFeaturesProject()]]) {

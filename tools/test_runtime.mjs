@@ -12,6 +12,7 @@ import {
   makeProject, makeSprite as makeSpriteOfType, makeTile as makeTileOfType,
 } from '../js/model.js';
 import { compileProject, TEXT_VAR_MARKER, displayWidth, OP } from '../js/compiler.js';
+import { FLASH_SUBSYSTEM } from '../js/flashCosts.js';
 import { generateIno } from '../js/codegen.js';
 import { compileExpression, evalExpression } from '../js/expression.js';
 import { makeAllFeaturesProject } from './all_features_project.mjs';
@@ -21,7 +22,7 @@ import {
   ARDUBOY_GENRES, buildArduboyPackage, buildInfoJson, packageProblem,
   renderBanner, validateHex,
 } from '../js/arduboyPackage.js';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -2126,6 +2127,27 @@ console.log('— .arduboy package —');
   }
 }
 
+console.log('— editor wiring —');
+{
+  // Every panel grabs its elements by id at module load. A typo, or markup
+  // renamed without its script, leaves a null that throws while the module is
+  // still initialising — which takes the whole app down with it, tab navigation
+  // and all, rather than breaking only the panel at fault. That shipped once.
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const html = readFileSync(join(root, "index.html"), "utf8");
+  const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+  const missing = [];
+  for (const file of readdirSync(join(root, 'js'))) {
+    if (!file.endsWith('.js')) continue;
+    const src = readFileSync(join(root, 'js', file), 'utf8');
+    for (const m of src.matchAll(/getElementById\('([^']+)'\)/g)) {
+      if (!ids.has(m[1])) missing.push(`js/${file} wants #${m[1]}`);
+    }
+  }
+  assert(missing.length === 0,
+    `every getElementById target exists in index.html${missing.length ? ` — ${missing.join(', ')}` : ''}`);
+}
+
 console.log('— flash budget and pruning —');
 {
   const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
@@ -2137,8 +2159,17 @@ console.log('— flash budget and pruning —');
     const p = makeProject();
     p.scenes[0].scripts.init = [OP.SET_LED, OP.MENU, OP.SAVE_GAME, OP.SWITCH, OP.LAUNCH_PROJECTILE]
       .map((n) => ev('SET_VAR', { varId: p.variables[0].id, value: n }));
-    const on = Object.entries(compileProject(p).features).filter(([, v]) => v).map(([k]) => k);
+    const feats = compileProject(p).features;
+    // `features` also carries per-opcode strip flags (checked separately
+    // below), the author's boot choice and the tilemap encoding. The measured
+    // table is the list of things that are actually scripted subsystems.
+    const on = Object.keys(FLASH_SUBSYSTEM).filter((k) => feats[k]);
     assert(on.length === 0, `operand bytes no longer switch subsystems on (got ${on.join(', ') || 'none'})`);
+    // Same story for the opcode flags: only the opcodes really emitted.
+    const opsOn = Object.entries(feats)
+      .filter(([k, v]) => v && k.startsWith('OP_')).map(([k]) => k).sort();
+    assert(opsOn.join(',') === 'OP_END,OP_JUMP,OP_SET_VAR',
+      `only emitted opcodes are kept (got ${opsOn.join(', ') || 'none'})`);
   }
 
   {
@@ -2238,8 +2269,12 @@ console.log('— flash budget and pruning —');
     // a warning that comes too late is the whole problem being solved.
     const c = compileProject(makeDemoProject());
     assert(c.flash.total > c.flash.baseline, 'the estimate includes the game on top of the engine');
-    assert(c.flash.total === c.flash.baseline + c.flash.subsystemBytes + c.flash.dataBytes,
-      'the parts add up to the total');
+    assert(c.flash.parts === c.flash.baseline + c.flash.subsystemBytes
+      + c.flash.opcodeBytes + c.flash.extraBytes + c.flash.dataBytes,
+      'the parts add up');
+    assert(c.flash.total === c.flash.parts + c.flash.margin,
+      'the total is the parts plus the safety margin');
+    assert(c.flash.margin > 0, 'and the margin pushes the estimate high, never low');
     assert(c.flash.budget === 28672, `the budget is the Arduboy's 28672 bytes (got ${c.flash.budget})`);
     const sum = Object.values(c.flash.data).reduce((n, v) => n + v, 0);
     assert(sum === c.flash.dataBytes, 'the data breakdown adds up to the data total');

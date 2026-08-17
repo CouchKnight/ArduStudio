@@ -164,7 +164,7 @@ A two-screen scrolling scene in the editor — green lines mark screen boundarie
    **ArduboyTones** libraries (Library Manager), select board **Arduino Leonardo** (or **Arduboy**),
    and upload over USB‑C.
 3. That's it — the sketch needs nothing beyond those two libraries and fits comfortably in the
-   ATmega32u4's 28 KB (the Key Quest demo builds to ~18 KB including the USB stack).
+   ATmega32u4's 28 KB (the Key Quest demo builds to 16 KB including the USB stack).
 
 ## Repo layout
 
@@ -190,11 +190,13 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 279 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 387 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
                                 #   actor queries, expressions, switch, animation states, overlay,
                                 #   variable values in text
-node tools/check_codegen.mjs    # demo, blank and an all-features project compile AND link
+node tools/check_codegen.mjs    # every sketch shape compiles AND links, plus font, PRNG and
+                                #   tilemap parity against the runtimes they must match
+PROJECT=blank tools/build_avr.sh          # the floor: an empty project
 tools/build_avr.sh              # optional: full ATmega32u4 build (needs gcc-avr, avr-libc)
 PROJECT=all-features tools/build_avr.sh   # the worst case: a game using every subsystem
 ```
@@ -205,16 +207,42 @@ libraries and the Arduino AVR core, linking a flashable `game.hex`.
 **Your game only carries the engine features it uses.** Optional subsystems — overlay, draw
 text, projectiles, collisions, expressions, scene stack, fades, save games, songs, menus,
 button scripts, per-frame scripts — are stripped from the generated sketch when nothing in the
-project scripts them, so they cost neither flash nor RAM. Against the ATmega32u4's ~28 KB of
-usable flash and 2,560 bytes of RAM:
+project scripts them. So is **every event kind you don't use**: each one is an arm of the
+script interpreter's dispatch, and a game that never teleports the player has no code for it.
+Against the ATmega32u4's 28,672 bytes of usable flash and 2,560 bytes of RAM:
 
 | Project | Flash | RAM |
 |---|---|---|
-| Key Quest demo | 22,894 | 1,922 |
-| Every subsystem at once | 27,114 | 2,047 |
+| Empty project (the floor) | 12,960 | 1,726 |
+| Key Quest demo | 16,032 | 1,803 |
+| Every subsystem and every event at once | 22,666 | 1,928 |
 
-The optional subsystems come to about 3.4 KB of flash in total, so a game reaching for all of
-them has roughly 1.9 KB left for its own scenes and art.
+Even a game using *everything* leaves ~6 KB for its own scenes and art, and a typical one has
+far more.
+
+### What the engine gives up to be this small
+
+Four decisions, none of which change what a game does:
+
+- **The sketch renders its own text.** Arduboy2's font is 256 characters (1,280 bytes) and only
+  95 of them can ever be printed, so the sketch carries that slice and its own `drawChar`, and
+  links `Arduboy2Base` rather than `Arduboy2`. `tools/check_codegen.mjs` compiles that function
+  next to a transcription of `Arduboy2::drawChar` and compares frame buffers for every
+  character at every alignment — over a million placements, all identical.
+- **Unused event handlers are cut from the source.** `--gc-sections` drops whole functions but
+  cannot reach inside one, and the interpreter is a single `switch`, so the compiler tells the
+  generator which opcodes a game emits and the rest of the arms never get written.
+- **Scene tile maps are bit-packed behind a palette.** A scene drawing 16 or fewer different
+  tiles stores four per byte; two or fewer, eight. Widths stay powers of two so reading a tile
+  is a shift and a mask, which matters at 60 fps.
+- **`random()` is a 30-byte xorshift** — the *same* one `js/emulator.js` runs, so a wandering
+  actor now takes the same path on the device that it did in the play test. avr-libc's version
+  cost 310 bytes for a sequence nothing matched.
+
+The Arduboy startup logo is left out by default (worth ~600 bytes, plus the bitmap drawing
+routine nothing else uses). Holding **B** at power-on still reaches the sound on/off setting;
+the hold-**UP** flashlight recovery mode goes with the logo. Untick **Skip the Arduboy boot
+logo** in the Export tab to keep both.
 
 ## Flash budget
 
@@ -223,10 +251,14 @@ occupy against that budget *before* you compile, with a collapsible breakdown, s
 game is caught in ArduStudio rather than by the Arduino IDE afterwards.
 
 The breakdown's middle section is usually the surprise: **optional subsystems are
-all-or-nothing.** One `Launch Projectile` anywhere brings in the whole projectile engine
-(~1.4 KB, the most expensive), one `Show Overlay` brings in the overlay (~0.9 KB), and so on.
-Deleting the *last* event of a kind removes that subsystem entirely — which is why the panel
-names the events that switched each one on.
+all-or-nothing.** One `Display Menu` anywhere brings in the whole menu system (~1.0 KB, the
+most expensive), one `Launch Projectile` brings in projectiles and collisions (~1.2 KB), one
+`Show Overlay` brings in the overlay (~0.7 KB), and so on. Deleting the *last* event of a kind
+removes that subsystem entirely — which is why the panel names the events that switched each
+one on.
+
+Below that, **event handlers** is the per-event-kind cost: small individually (5–450 bytes),
+but a game reaching across the whole event list pays a couple of kilobytes for the breadth.
 
 ArduStudio also leaves tiles, sprites and songs that nothing references out of the build. They
 stay in the project and the editors; they just are not written into the sketch. Tick **Always
@@ -241,7 +273,14 @@ npm run check:flash       # compare the estimate against a real AVR build
 
 `check:flash` fails if the estimate drifts past 5% *or* falls below the real size — it has to
 err high, since a warning that arrives too late is the problem it exists to prevent. Currently
-within about 1% on both the demo and the all-features project.
+2.6% high on the demo and 1.3% high on the all-features project.
+
+Both tools build the way the Arduino IDE does, `-flto` included, from a single shared recipe in
+`tools/avr_build.mjs`. That matters more than it sounds: measuring without LTO puts the numbers
+several hundred bytes off, which is the difference between a game that fits and one that
+doesn't. Each subsystem is measured alone, so `measure:flash` finishes by comparing the summed
+model against real builds and publishing the shortfall as a safety margin — the estimate stays
+on the high side by construction rather than by luck.
 
 ## Sharing a game: the `.arduboy` package
 

@@ -223,6 +223,15 @@
             <input type="checkbox" id="expPrune">
             Leave out art and music nothing uses
           </label>
+          <label class="prune-toggle">
+            <input type="checkbox" id="expMinimalBoot">
+            Skip the Arduboy boot logo (saves ~1 KB)
+          </label>
+          <p class="hint" id="expMinimalBootNote">
+            The game starts straight away. Holding <b>B</b> at power-on still
+            toggles sound, but the startup logo and the hold-<b>UP</b>
+            flashlight recovery mode are left out.
+          </p>
         </details>
         <div id="expWarnings" class="warnings"></div>
       </div>

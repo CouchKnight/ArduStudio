@@ -12,7 +12,10 @@ import {
   PROJECTILE_DIRS, PROJECTILE_DIR_SOURCE, ACTOR_SPEEDS,
 } from './model.js';
 import { compileExpression, EX, MAX_EXPR_BYTES } from './expression.js';
-import { FLASH_BUDGET, FLASH_BASELINE, FLASH_SUBSYSTEM } from './flashCosts.js';
+import {
+  FLASH_BUDGET, FLASH_BASELINE, FLASH_SUBSYSTEM, FLASH_OPCODE,
+  FLASH_BOOT_LOGO, FLASH_PACKED_TILES, FLASH_SAFETY_MARGIN,
+} from './flashCosts.js';
 
 // Which events switch each optional subsystem on, so the Export tab can say
 // "Projectiles, 1446 bytes, from 1 Launch Projectile" rather than leaving you to
@@ -254,6 +257,41 @@ export function wrapText(text) {
 }
 
 const MOVEMENT_CODES = { static: 0, wander: 1, patrolH: 2, patrolV: 3 };
+
+// A tile map is one byte per tile, which is the single largest block of data in
+// most projects — a 4x4-screen scene is 2,048 bytes on its own. Hardly any
+// scene actually uses 256 different tiles, so give each one just the bits it
+// needs plus a palette of the tiles it draws with.
+//
+// Widths stay powers of two so no value straddles a byte boundary: the device
+// reads a tile with a shift and a mask, which matters because drawFrame() does
+// it for every visible tile of every frame.
+//
+// This is an export-time encoding only. The compiled scene keeps plain tile
+// indices, so the emulator and the editors never see it.
+export function packTilemap(tiles) {
+  const plain = { shift: 0, palette: null, bytes: Uint8Array.from(tiles) };
+  const distinct = [...new Set(tiles)].sort((a, b) => a - b);
+  // shift = log2 of how many tiles share a byte: 1 -> 4 bits, 2 -> 2, 3 -> 1.
+  const shift = distinct.length <= 2 ? 3 : distinct.length <= 4 ? 2 : distinct.length <= 16 ? 1 : 0;
+  if (shift === 0) return plain;
+
+  const bits = 8 >> shift;
+  const per = 1 << shift;
+  const slot = new Map(distinct.map((t, i) => [t, i]));
+  const bytes = new Uint8Array(Math.ceil(tiles.length / per));
+  tiles.forEach((t, i) => { bytes[i >> shift] |= slot.get(t) << ((i & (per - 1)) * bits); });
+
+  // A palette only pays for itself on a map big enough to amortise it.
+  if (bytes.length + distinct.length >= tiles.length) return plain;
+  return { shift, palette: Uint8Array.from(distinct), bytes };
+}
+
+// What a packed map costs in flash: the packed bytes plus its palette.
+export const packedTilemapSize = (tiles) => {
+  const p = packTilemap(tiles);
+  return p.bytes.length + (p.palette ? p.palette.length : 0);
+};
 
 export function compileProject(project) {
   const warnings = [];
@@ -1105,7 +1143,28 @@ export function compileProject(project) {
     COLLISIONS: uses(OP.LAUNCH_PROJECTILE)
       || scenes.some((sc) => sc.actors.some((a) => a.group !== 0)),
     UPDATE_SCRIPTS: scenes.some((sc) => sc.actors.some((a) => a.scripts.update !== NO_SCRIPT)),
+    // Whether any scene's map is small enough to be worth bit-packing. If none
+    // is, the sketch keeps the plain one-byte-per-tile lookup.
+    PACKED_TILES: scenes.some((sc) => packTilemap(sc.tiles).shift !== 0),
+    // ArduboyTones is only worth linking (~800 bytes) for a game that makes a
+    // sound at all — a song to play or a single Play Tone is enough.
+    AUDIO: uses(OP.PLAY_SONG, OP.STOP_SONG, OP.TONE),
+    // Not detected from the game — the author chooses in the Export tab whether
+    // the Arduboy's startup logo is worth ~1 KB of their budget.
+    MINIMAL_BOOT: project.settings.minimalBoot !== false,
   };
+
+  // One flag per opcode, so the generated sketch can drop the `case` arms it
+  // will never reach. runScript is a single function, so --gc-sections cannot
+  // help here the way it does for whole functions — the dead arms have to be
+  // cut out of the source. END and JUMP are structural and always emitted.
+  for (const [name, op] of Object.entries(OP)) features[`OP_${name}`] = usedOps.has(op);
+  features.OP_END = true;
+  features.OP_JUMP = true;
+  // Cases that share a body through fallthrough are kept or dropped together.
+  features.OP_ACTOR_VIS = features.OP_ACTOR_HIDE || features.OP_ACTOR_SHOW;
+  features.OP_POP_ANY = features.OP_POP_SCENE || features.OP_POP_ALL_SCENES;
+  features.OP_FADE_ANY = features.OP_FADE_IN || features.OP_FADE_OUT;
 
   // ------------------------------------------------------------ flash budget
   //
@@ -1113,37 +1172,70 @@ export function compileProject(project) {
   // before the Arduino IDE does. The engine half comes from a measured table
   // (tools/measure_flash.mjs); the data half is exact, since every array below
   // lands in flash byte for byte.
+  // AVR aligns everything to one byte, so a struct costs exactly the sum of its
+  // fields: SceneDef is 14 bytes (17 once it carries the tilemap palette
+  // pointer and bit width), ActorDef 18, TriggerDef 8.
+  const sceneDefBytes = features.PACKED_TILES ? 17 : 14;
   const dataBreakdown = {
     'Script bytecode': code.length,
     Strings: strings.reduce((n, str) => n + str.length + 1, 0) + strings.length * 2,
-    'Scene tilemaps': scenes.reduce((n, sc) => n + sc.tiles.length, 0),
-    Tileset: tiles.length * 8 + Math.ceil(tiles.length / 8),
+    'Scene tilemaps': scenes.reduce((n, sc) => n + packedTilemapSize(sc.tiles), 0),
+    Tileset: 2 + tiles.length * 8 + Math.ceil(tiles.length / 8),
     Sprites: sprites.reduce((n, sp) => n + sp.frames.reduce((m, f) => m + f.length, 0), 0)
-      + sprites.length * 7,
+      + sprites.reduce((n, sp) => n + 7 + (sp.states ? sp.states.length * 2 : 0), 0),
     Songs: songs.reduce((n, sg) => n + sg.notes.length * 4 + 4, 0),
-    'Scene / actor tables': scenes.reduce((n, sc) => n + 12 + sc.actors.length * 14 + sc.triggers.length * 8, 0)
+    'Scene / actor tables': scenes.reduce((n, sc) =>
+      n + sceneDefBytes + sc.actors.length * 18 + sc.triggers.length * 8, 0)
       + scriptOffsets.length * 2,
   };
   const dataBytes = Object.values(dataBreakdown).reduce((n, v) => n + v, 0);
 
-  const subsystems = Object.entries(features)
-    .filter(([, on]) => on)
-    .map(([name]) => ({
+  // Driven off the measured table rather than off `features`, which also holds
+  // the per-opcode strip flags and the author's boot choice — neither of which
+  // is a subsystem the breakdown should list.
+  const subsystems = Object.keys(FLASH_SUBSYSTEM)
+    .filter((name) => features[name])
+    .map((name) => ({
       name,
       bytes: FLASH_SUBSYSTEM[name] || 0,
       from: SUBSYSTEM_EVENTS[name] || [],
     }))
     .sort((a, b) => b.bytes - a.bytes);
 
+  // Each opcode a game uses keeps its arm of runScript's switch. Individually
+  // small, but a game reaching for most of the event list pays a couple of
+  // kilobytes for them, so they are counted rather than folded into the
+  // baseline. Opcodes owned by a subsystem above are not in this table.
+  const opcodeBytes = Object.entries(FLASH_OPCODE)
+    .reduce((n, [name, bytes]) => n + (features[name] ? bytes : 0), 0);
+
+  // Choices about how the sketch is built rather than what it scripts.
+  const extras = [];
+  if (!features.MINIMAL_BOOT) {
+    extras.push({ name: 'Arduboy boot logo', bytes: FLASH_BOOT_LOGO });
+  }
+  if (features.PACKED_TILES) {
+    extras.push({ name: 'Packed tile maps', bytes: FLASH_PACKED_TILES });
+  }
+
   const flash = {
     budget: FLASH_BUDGET,
     baseline: FLASH_BASELINE,
     subsystems,
     subsystemBytes: subsystems.reduce((n, x) => n + x.bytes, 0),
+    opcodeBytes,
+    opcodeCount: Object.keys(FLASH_OPCODE).filter((name) => features[name]).length,
+    extras,
+    extraBytes: extras.reduce((n, x) => n + x.bytes, 0),
     data: dataBreakdown,
     dataBytes,
   };
-  flash.total = flash.baseline + flash.subsystemBytes + flash.dataBytes;
+  flash.parts = flash.baseline + flash.subsystemBytes + flash.opcodeBytes
+    + flash.extraBytes + flash.dataBytes;
+  // The parts are each measured in isolation, which lands a few percent below
+  // a real build once they are compiled together. See FLASH_SAFETY_MARGIN.
+  flash.margin = Math.round(flash.parts * FLASH_SAFETY_MARGIN);
+  flash.total = flash.parts + flash.margin;
   flash.over = flash.total - flash.budget;
 
   const startScene = sceneIndex.get(project.settings.startSceneId) ?? 0;

@@ -874,6 +874,10 @@ export function makeProject(name = 'Untitled Game') {
       // Leave out art and music nothing references, to save flash. Off means
       // every asset ships whether the game reaches it or not.
       pruneUnused: true,
+      // Boot straight into the game instead of running Arduboy2's startup
+      // sequence. Saves ~1 KB — the logo animation, the bitmap it draws with
+      // and the flashlight recovery mode — and keeps the hold-B sound toggle.
+      minimalBoot: true,
     },
     variables: [
       { id: uid('var'), name: 'has_key' },
@@ -1131,5 +1135,6 @@ export function normalizeProject(p) {
   if (typeof p.settings.description !== 'string') p.settings.description = '';
   // Older projects predate pruning; default it on, but honour an explicit off.
   if (typeof p.settings.pruneUnused !== 'boolean') p.settings.pruneUnused = true;
+  if (typeof p.settings.minimalBoot !== 'boolean') p.settings.minimalBoot = true;
   return p;
 }
