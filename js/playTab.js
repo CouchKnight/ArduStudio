@@ -82,11 +82,29 @@ export function initPlayTab(app) {
     renderVars();
   }
 
+  // Which of a variable's named flags are currently set. A variable holding
+  // flags reads as a bare number like 37, which is no help while debugging —
+  // so once the flags have names, show the ones that are on.
+  function flagsOf(i) {
+    const v = app.project.variables[i];
+    const names = (v && v.flags) || [];
+    if (!names.length) return '';
+    const on = [];
+    for (let bit = 0; bit < names.length; bit++) {
+      if (names[bit] && (emu.vars[i] & (1 << bit))) on.push(names[bit]);
+    }
+    return on.join(', ');
+  }
+
   function renderVars() {
     clear(varTable);
     if (!emu || !compiled) return;
     compiled.varNames.forEach((name, i) => {
-      varTable.append(el('tr', {}, el('td', {}, name), el('td', { dataset: { varIdx: i } }, String(emu.vars[i]))));
+      varTable.append(el('tr', {},
+        el('td', {}, name),
+        el('td', { dataset: { varIdx: i } }, String(emu.vars[i])),
+        el('td', { class: 'hint', dataset: { flagIdx: i } }, flagsOf(i)),
+      ));
     });
   }
 
@@ -94,6 +112,9 @@ export function initPlayTab(app) {
     if (!emu) return;
     varTable.querySelectorAll('td[data-var-idx]').forEach((td) => {
       td.textContent = String(emu.vars[parseInt(td.dataset.varIdx, 10)]);
+    });
+    varTable.querySelectorAll('td[data-flag-idx]').forEach((td) => {
+      td.textContent = flagsOf(parseInt(td.dataset.flagIdx, 10));
     });
   }
 

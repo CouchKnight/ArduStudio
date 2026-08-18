@@ -396,9 +396,36 @@ running (8 deep, then further starts are dropped).</p>
 script that reads or writes it, so you can tell at a glance what a variable does — and what deleting
 it would break.</p>
 
+<h3>Variable flags</h3>
+<p>Most variables end up holding a yes/no — <i>has the key</i>, <i>met the king</i>,
+<i>door open</i> — and spending a whole byte on one bit runs you out of variables long
+before anything else. <b>Variable flags</b> pack eight true/false values into a single
+variable, so 32 variables cover up to 256 of them.</p>
+<ul>
+  <li><b>Variable Flags Add</b> — sets the ticked flags to true. Anything you leave
+      unticked keeps whatever it was.</li>
+  <li><b>Variable Flags Clear</b> — sets the ticked flags to false, again leaving the
+      rest alone.</li>
+  <li><b>Variable Flags Set</b> — replaces the variable with <i>exactly</i> the ticked
+      flags, turning off everything you did not tick. With none ticked it clears them all.</li>
+  <li><b>If Variable Flags…</b> — branches on <b>all of</b> or <b>any of</b> the ticked
+      flags. Checked once; it never waits.</li>
+</ul>
+<p>Tick <b>Show flag names</b> in the Variables tab and press <b>⚑</b> on a row to name a
+variable's eight flags. The script editor then shows those names instead of
+<i>Flag 1…8</i>, and the play-test watch lists which are currently set — the difference
+between a script you can read next month and one you cannot. Names are stored in your
+project file only; they are never written into the sketch, so they cost nothing on the
+Arduboy.</p>
+<p class="hint">The flags are just bits of an ordinary byte, worth 1, 2, 4, 8, 16, 32, 64
+and 128 — so <code>If Variable</code> can still compare the raw number if you want it to.
+<code>If Variable Flags</code> exists because that breaks as soon as another flag is set
+independently, and because <code>== 5</code> does not say what it means.</p>
+
 <h2>Scripting tips</h2>
 <ul>
-  <li>Variables are bytes (0–255). Use them as flags (0/1), counters, or states.</li>
+  <li>Variables are bytes (0–255). Use them as counters, states, or — eight at a time —
+      as flags (see <i>Variable flags</i> above).</li>
   <li>Actor visibility resets when a scene loads. To keep an actor gone forever, set a variable when it
       disappears and hide it again in the scene's <i>On Init</i> script (see the slime in the Key Quest demo).</li>
   <li><b>Set Tile</b> is great for opening doors and revealing passages — combine with the solid flag of tiles.</li>

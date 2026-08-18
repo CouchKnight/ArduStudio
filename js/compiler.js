@@ -9,13 +9,21 @@ import {
   pixelsToBytes, sceneById, spriteById, sceneScripts,
   ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS, SCENE_SCRIPT_SLOTS, NON_BLOCKING_SLOTS,
   directionCode, effectCode, collisionGroupCode,
-  PROJECTILE_DIRS, PROJECTILE_DIR_SOURCE, ACTOR_SPEEDS,
+  PROJECTILE_DIRS, PROJECTILE_DIR_SOURCE, ACTOR_SPEEDS, VAR_FLAGS,
 } from './model.js';
 import { compileExpression, EX, MAX_EXPR_BYTES } from './expression.js';
 import {
   FLASH_BUDGET, FLASH_BASELINE, FLASH_SUBSYSTEM, FLASH_OPCODE,
   FLASH_BOOT_LOGO, FLASH_PACKED_TILES, FLASH_SAFETY_MARGIN,
 } from './flashCosts.js';
+
+// Names for the flag events' warnings — the three share one compile case, so
+// the message has to say which of them was skipped.
+const EVENT_LABELS = {
+  VAR_FLAGS_ADD: 'Variable Flags Add',
+  VAR_FLAGS_CLEAR: 'Variable Flags Clear',
+  VAR_FLAGS_SET: 'Variable Flags Set',
+};
 
 // Which events switch each optional subsystem on, so the Export tab can say
 // "Projectiles, 1446 bytes, from 1 Launch Projectile" rather than leaving you to
@@ -95,7 +103,17 @@ export const OP = {
   DRAW_TEXT: 51,    // strIdx, x, y, location (0 = background, 1 = overlay)
   START_SCRIPT: 52, // scriptIdxLo, scriptIdxHi, selfIdx (0xFF = none)
   EXPR_SET: 53,     // varIdx, exprLen, expr bytes… — stores the result
+  // Flags: eight true/false values packed into one byte variable. "Set" is
+  // absent on purpose — replacing the whole byte is what SET_VAR already does.
+  VAR_FLAGS_ADD: 54,   // varIdx, mask — turns the mask's flags on
+  VAR_FLAGS_CLEAR: 55, // varIdx, mask — turns the mask's flags off
+  // varIdx, mask, mode (0 = all of the mask set, 1 = any of it), elseLo, elseHi
+  IF_VAR_FLAGS: 56,
 };
+
+// IF_VAR_FLAGS match modes.
+export const FLAGS_ALL = 0;
+export const FLAGS_ANY = 1;
 
 // Animation speed: frames between animation steps. 0 freezes the actor.
 export const ANIM_SPEEDS = [
@@ -539,6 +557,48 @@ export function compileProject(project) {
           const idx = varIndex.get(ev.varId);
           if (idx === undefined) { warnings.push(`${ctx}: If Variable has no variable selected — skipped`); break; }
           emitOp(OP.IF_VAR, idx, CMP[ev.cmp] ?? 0, byte(ev.value));
+          const elsePatch = code.length; emitU16(0);
+          compileEvents(ev.then, scene, ctx, nonBlocking);
+          emitOp(OP.JUMP);
+          const endPatch = code.length; emitU16(0);
+          patchU16(code, elsePatch, code.length);
+          compileEvents(ev.else, scene, ctx, nonBlocking);
+          patchU16(code, endPatch, code.length);
+          break;
+        }
+        // The three writers. Only the mask differs, so they share their
+        // validation — but note Set deliberately falls through to SET_VAR
+        // rather than getting an opcode of its own: replacing the byte is
+        // exactly what that instruction already does.
+        case 'VAR_FLAGS_ADD':
+        case 'VAR_FLAGS_CLEAR':
+        case 'VAR_FLAGS_SET': {
+          const label = EVENT_LABELS[ev.type] || ev.type;
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: ${label} has no variable selected — skipped`); break; }
+          const mask = flagMask(ev.mask);
+          // An empty Set means "clear every flag", which is worth compiling.
+          // An empty Add or Clear changes nothing at all.
+          if (!mask && ev.type !== 'VAR_FLAGS_SET') {
+            warnings.push(`${ctx}: ${label} has no flags ticked, so it would do nothing — skipped`);
+            break;
+          }
+          if (ev.type === 'VAR_FLAGS_ADD') emitOp(OP.VAR_FLAGS_ADD, idx, mask);
+          else if (ev.type === 'VAR_FLAGS_CLEAR') emitOp(OP.VAR_FLAGS_CLEAR, idx, mask);
+          else emitOp(OP.SET_VAR, idx, mask);
+          break;
+        }
+        case 'IF_VAR_FLAGS': {
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: If Variable Flags has no variable selected — skipped`); break; }
+          const mask = flagMask(ev.mask);
+          // With nothing ticked there is no sensible answer — "all of none"
+          // is true and "any of none" is false. Refuse rather than pick.
+          if (!mask) {
+            warnings.push(`${ctx}: If Variable Flags has no flags ticked — skipped`);
+            break;
+          }
+          emitOp(OP.IF_VAR_FLAGS, idx, mask, ev.mode === 'any' ? FLAGS_ANY : FLAGS_ALL);
           const elsePatch = code.length; emitU16(0);
           compileEvents(ev.then, scene, ctx, nonBlocking);
           emitOp(OP.JUMP);
@@ -1272,5 +1332,8 @@ export function compileProject(project) {
 function clampTile(v, max) { return Math.max(0, Math.min(max - 1, v | 0)); }
 function clampByte(v, lo, hi) { return Math.max(lo, Math.min(hi, v | 0)); }
 function byte(v) { return Math.max(0, Math.min(255, v | 0)); }
+
+// A flag mask, clamped to the eight bits a byte variable actually has.
+function flagMask(v) { return (v | 0) & ((1 << VAR_FLAGS) - 1); }
 function int8byte(v) { const c = Math.max(-128, Math.min(127, v | 0)); return c & 0xff; }
 function patchU16(code, at, value) { code[at] = value & 0xff; code[at + 1] = (value >> 8) & 0xff; }

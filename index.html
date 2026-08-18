@@ -125,6 +125,12 @@
         </div>
         <p class="hint">Byte variables (0–255) drive all game logic — flags, counters, states.
           Up to 32. The usage column shows every script that references a variable.</p>
+        <label class="hint"><input type="checkbox" id="varShowFlags">
+          Show flag names — each variable can also hold eight true/false <b>flags</b></label>
+        <p class="hint" id="varFlagsHelp">Press ⚑ on a row to name that variable's eight flags,
+          then use them with the <b>Variable Flags</b> events. One variable covers eight yes/no
+          answers instead of one. Names are stored in your project only and cost nothing on the
+          Arduboy.</p>
         <table id="varTable" class="var-table"></table>
       </div>
     </div>

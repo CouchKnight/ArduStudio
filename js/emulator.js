@@ -15,6 +15,7 @@ import {
   PROJECTILE_SRC_SELF, PROJECTILE_SRC_PLAYER,
   ACTOR_REF_SELF, ACTOR_REF_PLAYER,
   MAX_DRAWN_TEXT, DRAW_TEXT_OVERLAY, DRAW_TEXT_BACKGROUND, TEXT_VAR_MARKER,
+  FLAGS_ANY,
 } from './compiler.js';
 import { evalExpression } from './expression.js';
 import { FONT5X7 } from './font5x7.js';
@@ -798,6 +799,24 @@ export class Emulator {
           const cmp = code[s.pc++], val = code[s.pc++];
           const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
           if (!compare(cmp, v, val)) s.pc = elseAddr;
+          break;
+        }
+        case OP.VAR_FLAGS_ADD: {
+          const i = code[s.pc++];
+          this.vars[i] |= code[s.pc++];
+          break;
+        }
+        case OP.VAR_FLAGS_CLEAR: {
+          const i = code[s.pc++];
+          this.vars[i] &= ~code[s.pc++] & 0xff;
+          break;
+        }
+        case OP.IF_VAR_FLAGS: {
+          const v = this.vars[code[s.pc++]];
+          const mask = code[s.pc++], mode = code[s.pc++];
+          const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          const hit = mode === FLAGS_ANY ? (v & mask) !== 0 : (v & mask) === mask;
+          if (!hit) s.pc = elseAddr;
           break;
         }
         case OP.JUMP: { s.pc = code[s.pc] | (code[s.pc + 1] << 8); break; }

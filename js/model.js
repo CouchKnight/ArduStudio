@@ -20,6 +20,8 @@ export const MAX_FRAMES = 4;
 export const MAX_SONGS = 32;
 export const MAX_SONG_NOTES = 192;
 export const MAX_MENU_OPTIONS = 8;
+// True/false flags packed into one byte variable. Variables are bytes, so eight.
+export const VAR_FLAGS = 8;
 
 // The Arduboy's six buttons. Bit values match BTN in emulator.js; the generated
 // sketch maps them to Arduboy2's own constants, whose bit layout differs by
@@ -534,6 +536,11 @@ export function makeEvent(type) {
       srcKind: 'number', value: 1, srcVarId: '',
     };
     case 'IF_VAR':      return { id: uid('ev'), type, varId: '', cmp: '==', value: 1, then: [], else: [] };
+    // `mask` is a bitmask over the variable's eight flags, bit 0 = Flag 1.
+    case 'VAR_FLAGS_ADD':
+    case 'VAR_FLAGS_CLEAR':
+    case 'VAR_FLAGS_SET':   return { id: uid('ev'), type, varId: '', mask: 0 };
+    case 'IF_VAR_FLAGS':    return { id: uid('ev'), type, varId: '', mask: 0, mode: 'all', then: [], else: [] };
     case 'TONE':        return { id: uid('ev'), type, freq: 440, frames: 15 };
     case 'WAIT':        return { id: uid('ev'), type, frames: 30 };
     case 'ACTOR_HIDE':  return { id: uid('ev'), type, target: 'self' };
@@ -639,6 +646,10 @@ export const EVENT_DEFS = [
   { type: 'MATH_FN',      label: 'Math Functions',    group: 'Variables' },
   { type: 'EXPR_SET',     label: 'Evaluate Math Expression', group: 'Variables' },
   { type: 'IF_VAR',       label: 'If Variable…',      group: 'Variables' },
+  { type: 'VAR_FLAGS_ADD',   label: 'Variable Flags Add',   group: 'Variables' },
+  { type: 'VAR_FLAGS_CLEAR', label: 'Variable Flags Clear', group: 'Variables' },
+  { type: 'VAR_FLAGS_SET',   label: 'Variable Flags Set',   group: 'Variables' },
+  { type: 'IF_VAR_FLAGS',    label: 'If Variable Flags…',   group: 'Variables' },
   { type: 'STORE_ACTOR_DIR', label: 'Store Actor Direction In Variable', group: 'Variables' },
   { type: 'STORE_ACTOR_POS', label: 'Store Actor Position In Variables', group: 'Variables' },
   { type: 'ACTOR_HIDE',   label: 'Hide Actor',        group: 'Actors' },
@@ -1081,6 +1092,17 @@ function normalizeScripts(entity, slots, legacy) {
 export function normalizeProject(p) {
   if (!p || p.format !== 'ardustudio-project') throw new Error('Not an ArduStudio project file');
   p.variables = p.variables || [];
+  for (const v of p.variables) {
+    // Flag names are editor-only — they are never written into the sketch, so
+    // they cost nothing on the device. Absent, or an empty entry, falls back
+    // to "Flag 1".."Flag 8" in the editor. Dropping an all-empty array keeps
+    // saved files exactly as they were for anyone not using flags.
+    v.flags = Array.isArray(v.flags)
+      ? v.flags.slice(0, VAR_FLAGS).map((n) => String(n == null ? '' : n).trim())
+      : [];
+    while (v.flags.length && !v.flags[v.flags.length - 1]) v.flags.pop();
+    if (!v.flags.length) delete v.flags;
+  }
   p.tiles = (p.tiles || []).slice(0, MAX_TILES);
   p.sprites = (p.sprites || []).slice(0, MAX_SPRITES);
   for (const spr of p.sprites) {
