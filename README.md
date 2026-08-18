@@ -65,6 +65,7 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 `Show Dialogue` (auto word-wrapped, paged), `Display Menu` (2–8 options, two layouts,
 optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add Variable`,
 `Math Functions`, `Evaluate Math Expression`,
+`Variable Flags Add / Clear / Set`, `If Variable Flags…`,
 `Change Scene`, `Teleport Player`, `Set Tile` (open doors, reveal passages), `Hide / Show Actor`,
 `Move Actor` (walks and blocks the script until it arrives, or teleports),
 `Set Actor Sprite`, `Set Actor Direction`, `Set Actor Movement Speed`, `Actor Effects`
@@ -94,6 +95,20 @@ Math Functions compiles to exactly the bytes the matching expression would; pick
 better. Results **stop at 0 and 255 rather than wrapping**, so overkill damage floors at 0 instead
 of rolling round to 251, and `Add To Variable` now behaves the same way. The arithmetic itself has
 ±32767 of room — only the final store is capped.
+
+**Variable flags** pack eight true/false values into one byte variable, so 32 variables
+cover up to 256 yes/no answers — *has the key*, *met the king*, *door open* — instead of
+burning a whole variable on each. `Variable Flags Add` turns the ticked flags on and
+`Clear` turns them off, both leaving the others alone; `Set` replaces the variable with
+exactly the ticked flags. `If Variable Flags…` branches on **all of** or **any of** a
+selection.
+
+Flags can be **named** per variable — tick *Show flag names* in the Variables tab and press
+⚑ on a row. A script then reads `has_sword` rather than `Flag 3`, and the play-test watch
+lists which flags are currently set. Names live in the project file only and are never
+written into the sketch, so they cost nothing on the device. The whole feature is three
+opcodes totalling ~240 bytes, and only in a game that uses it — `Set` needs no opcode at
+all, since replacing a byte is what `Set Variable` already does.
 
 **Loop** repeats its events forever, so something inside must end it — a `Wait` to stay
 responsive, or `Stop Script` / `Change Scene` to break out. A loop with none of those never
@@ -190,7 +205,7 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 387 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 408 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
                                 #   actor queries, expressions, switch, animation states, overlay,
                                 #   variable values in text
@@ -215,7 +230,7 @@ Against the ATmega32u4's 28,672 bytes of usable flash and 2,560 bytes of RAM:
 |---|---|---|
 | Empty project (the floor) | 12,960 | 1,726 |
 | Key Quest demo | 16,032 | 1,803 |
-| Every subsystem and every event at once | 22,666 | 1,928 |
+| Every subsystem and every event at once | 22,874 | 1,928 |
 
 Even a game using *everything* leaves ~6 KB for its own scenes and art, and a typical one has
 far more.
@@ -273,7 +288,7 @@ npm run check:flash       # compare the estimate against a real AVR build
 
 `check:flash` fails if the estimate drifts past 5% *or* falls below the real size — it has to
 err high, since a warning that arrives too late is the problem it exists to prevent. Currently
-2.6% high on the demo and 1.3% high on the all-features project.
+2.6% high on the demo and 1.5% high on the all-features project.
 
 Both tools build the way the Arduino IDE does, `-flto` included, from a single shared recipe in
 `tools/avr_build.mjs`. That matters more than it sounds: measuring without LTO puts the numbers

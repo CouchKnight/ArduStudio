@@ -18,6 +18,7 @@ import { compileExpression, evalExpression } from '../js/expression.js';
 import { makeAllFeaturesProject } from './all_features_project.mjs';
 import { Emulator, BTN, memoryStorage } from '../js/emulator.js';
 import { readZip, crc32 } from '../js/zip.js';
+import { collectUsages as collectVariableUsages } from '../js/variablesTab.js';
 import {
   ARDUBOY_GENRES, buildArduboyPackage, buildInfoJson, packageProblem,
   renderBanner, validateHex,
@@ -2124,6 +2125,138 @@ console.log('— .arduboy package —');
       const check = validateHex(readFileSync(real, 'utf8'));
       assert(check.ok, `the real build-avr/game.hex validates (${check.error || `${check.bytes} bytes`})`);
     }
+  }
+}
+
+console.log('— variable flags —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+  // A scratch project whose villager script we swap per case.
+  // The seed goes at the top of the same script, not in the scene's On Init —
+  // a queued init script has not necessarily finished by the time an interact
+  // script runs, and a seed that never lands makes every case below pass on 0.
+  const runFlags = (events, seed = 0) => {
+    const proj = makeDemoProject();
+    const v = proj.variables[0];
+    proj.scenes[0].actors[0].scripts.interact = [
+      ev('SET_VAR', { varId: v.id, value: seed }),
+      ...events(v),
+    ];
+    const c = compileProject(proj);
+    const e = new Emulator(c, { onTone: () => {} });
+    runActorScript(e, 0);
+    return { vars: e.vars, warnings: c.warnings, compiled: c, emu: e };
+  };
+
+  // Add turns ticked flags on and leaves everything else alone.
+  {
+    // seed 0b1000_0010: flags 2 and 8. Add flags 1 and 3 -> 0b1000_0111.
+    const r = runFlags((v) => [ev('VAR_FLAGS_ADD', { varId: v.id, mask: 0b0000_0101 })], 0b1000_0010);
+    assert(r.vars[0] === 0b1000_0111,
+      `Flags Add turns on the ticked flags and preserves the rest (got ${r.vars[0].toString(2)})`);
+  }
+
+  // Clear turns ticked flags off and leaves everything else alone.
+  {
+    const r = runFlags((v) => [ev('VAR_FLAGS_CLEAR', { varId: v.id, mask: 0b0000_0101 })], 0b1000_0111);
+    assert(r.vars[0] === 0b1000_0010,
+      `Flags Clear turns off the ticked flags and preserves the rest (got ${r.vars[0].toString(2)})`);
+  }
+
+  // Set REPLACES. This is the one that catches an accidental |= .
+  {
+    const r = runFlags((v) => [ev('VAR_FLAGS_SET', { varId: v.id, mask: 0b0000_0101 })], 0b1000_0010);
+    assert(r.vars[0] === 0b0000_0101,
+      `Flags Set replaces the whole value rather than merging (got ${r.vars[0].toString(2)})`);
+  }
+
+  // Set with nothing ticked is a meaningful "clear them all", so it compiles.
+  {
+    const r = runFlags((v) => [ev('VAR_FLAGS_SET', { varId: v.id, mask: 0 })], 0b1111_1111);
+    assert(r.vars[0] === 0, 'Flags Set with none ticked clears every flag');
+    assert(r.warnings.length === 0, `and does not warn (${r.warnings.join('; ') || 'none'})`);
+  }
+
+  // Set needs no opcode of its own — it is SET_VAR.
+  {
+    const r = runFlags((v) => [ev('VAR_FLAGS_SET', { varId: v.id, mask: 0b0000_0101 })]);
+    assert(r.compiled.features.OP_VAR_FLAGS_ADD !== true
+      && r.compiled.features.OP_VAR_FLAGS_CLEAR !== true,
+      'Flags Set adds no flag opcode to the sketch');
+    assert(r.compiled.features.OP_SET_VAR === true, 'because it compiles to Set Variable');
+  }
+
+  // Only the low eight bits exist, so a stray bit 9 cannot corrupt the byte.
+  {
+    const r = runFlags((v) => [ev('VAR_FLAGS_ADD', { varId: v.id, mask: 0b1_0000_0001 })], 0);
+    assert(r.vars[0] === 1, `a mask wider than a byte is clamped to eight flags (got ${r.vars[0]})`);
+  }
+
+  // If: all-of vs any-of on the same mask and the same value.
+  {
+    const branch = (mode, mask) => (v) => [ev('IF_VAR_FLAGS', {
+      varId: v.id, mask, mode,
+      then: [ev('SET_VAR', { varId: v.id, value: 111 })],
+      else: [ev('SET_VAR', { varId: v.id, value: 222 })],
+    })];
+    // Value has flag 1 but not flag 3.
+    assert(runFlags(branch('all', 0b0000_0101), 0b0000_0001).vars[0] === 222,
+      'If Flags "all of" is false when only some of the mask is set');
+    assert(runFlags(branch('any', 0b0000_0101), 0b0000_0001).vars[0] === 111,
+      'If Flags "any of" is true when one of the mask is set');
+    assert(runFlags(branch('all', 0b0000_0101), 0b0000_0101).vars[0] === 111,
+      'If Flags "all of" is true when the whole mask is set');
+    assert(runFlags(branch('any', 0b0000_0101), 0b0001_0000).vars[0] === 222,
+      'If Flags "any of" is false when none of the mask is set');
+  }
+
+  // Nothing ticked: Add and Clear would do nothing, If has no sensible answer.
+  for (const type of ['VAR_FLAGS_ADD', 'VAR_FLAGS_CLEAR', 'IF_VAR_FLAGS']) {
+    const proj = makeDemoProject();
+    const v = proj.variables[0];
+    proj.scenes[0].actors[0].scripts.interact = [ev(type, { varId: v.id, mask: 0 })];
+    const c = compileProject(proj);
+    assert(c.warnings.some((w) => /no flags ticked/.test(w)),
+      `${type} with no flags ticked warns rather than compiling to a no-op`);
+  }
+
+  // Flag names survive a save/load, and a project not using them is unchanged.
+  {
+    const proj = makeDemoProject();
+    proj.variables[0].flags = ['has_sword', '', 'met_king', '', '', '', '', ''];
+    const round = normalizeProject(JSON.parse(JSON.stringify(proj)));
+    assert(round.variables[0].flags.join(',') === 'has_sword,,met_king',
+      `flag names survive a save/load, trailing blanks trimmed (got ${JSON.stringify(round.variables[0].flags)})`);
+    assert(!('flags' in round.variables[1]),
+      'a variable with no named flags carries no flags array at all');
+
+    // An all-blank array is dropped, so turning the feature off leaves the
+    // saved file exactly as it was before.
+    const blank = makeDemoProject();
+    blank.variables[0].flags = ['', '', ''];
+    assert(!('flags' in normalizeProject(JSON.parse(JSON.stringify(blank))).variables[0]),
+      'and clearing every name removes the array again');
+
+    // Nine names cannot exist — a byte has eight bits.
+    const over = makeDemoProject();
+    over.variables[0].flags = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+    assert(normalizeProject(JSON.parse(JSON.stringify(over))).variables[0].flags.length === 8,
+      'a project claiming nine flags is cut back to eight');
+  }
+
+  // A variable is still reported as used, so deleting it warns properly.
+  {
+    const proj = makeDemoProject();
+    const v = proj.variables[0];
+    proj.scenes[0].actors[0].scripts.interact = [ev('IF_VAR_FLAGS', {
+      varId: v.id, mask: 1, mode: 'all',
+      then: [ev('ADD_VAR', { varId: proj.variables[1].id, delta: 1 })], else: [],
+    })];
+    const usages = collectVariableUsages(proj);
+    assert((usages.get(v.id) || []).some((u) => u.how === 'if flags'),
+      'the Variables tab counts If Variable Flags as a use');
+    assert((usages.get(proj.variables[1].id) || []).length > 0,
+      'and walks into its branches to find nested uses');
   }
 }
 

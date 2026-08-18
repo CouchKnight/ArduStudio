@@ -221,6 +221,12 @@ const OPCODE_VARIANTS = {
       { target: a.id, stateId: spr.states[0].id })];
   },
   START_SCRIPT: () => [makeEvent('START_SCRIPT')],
+  VAR_FLAGS_ADD: (p) => [Object.assign(makeEvent('VAR_FLAGS_ADD'),
+    { varId: p.variables[0].id, mask: 0b0000_0101 })],
+  VAR_FLAGS_CLEAR: (p) => [Object.assign(makeEvent('VAR_FLAGS_CLEAR'),
+    { varId: p.variables[0].id, mask: 0b0000_0101 })],
+  IF_VAR_FLAGS: (p) => [Object.assign(makeEvent('IF_VAR_FLAGS'),
+    { varId: p.variables[0].id, mask: 0b0000_0101, mode: 'all' })],
 };
 
 console.log('\n== measuring opcode arms ==');

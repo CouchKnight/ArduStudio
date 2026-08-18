@@ -5,7 +5,7 @@
 // engine changes; tools/test_runtime.mjs checks these against a real build so
 // they cannot drift silently.
 //
-// Measured 2026-08-17.
+// Measured 2026-08-18.
 
 // Usable flash on an Arduboy once the bootloader has its share.
 export const FLASH_BUDGET = 28672;
@@ -49,11 +49,14 @@ export const FLASH_OPCODE = {
   OP_IF_VAR: 149,
   OP_SET_ANIM_FRAME: 127,
   OP_SET_ACTOR_DIR: 119,
+  OP_IF_VAR_FLAGS: 107,
   OP_SET_ANIM_SPEED: 99,
   OP_ADD_VAR: 97,
   OP_ACTOR_VIS: 94,
   OP_SET_ACTOR_SPEED: 89,
   OP_PLAYER_POS: 81,
+  OP_VAR_FLAGS_CLEAR: 69,
+  OP_VAR_FLAGS_ADD: 67,
   OP_TEXT: 66,
   OP_START_SCRIPT: 62,
   OP_WAIT: 34,

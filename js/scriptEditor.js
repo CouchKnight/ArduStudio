@@ -5,7 +5,7 @@ import { el, clear } from './ui.js';
 import {
   makeEvent, EVENT_DEFS, sceneCols, sceneRows, MAX_MENU_OPTIONS, BUTTONS,
   DIRECTIONS, PROJECTILE_DIRS, ACTOR_SPEEDS, ACTOR_EFFECTS, COLLIDE_TARGETS,
-  MATH_OPS, MATH_SOURCES,
+  MATH_OPS, MATH_SOURCES, VAR_FLAGS,
   SCENE_SCRIPT_SLOTS, ACTOR_SCRIPT_SLOTS, TRIGGER_SCRIPT_SLOTS,
   cloneWithNewIds, retargetActorRefs,
 } from './model.js';
@@ -77,6 +77,28 @@ function buttonChecks(mask, onChange) {
     }, b.label));
   }
   return row;
+}
+
+// The eight flags of one byte variable, as a two-column grid of toggles
+// returning a bitmask. Labels come from whatever the variable's flags have been
+// named in the Variables tab, falling back to "Flag 1".."Flag 8" — so a script
+// reads "has_sword" rather than "Flag 3" once they are named.
+function flagChecks(project, varId, mask, onChange) {
+  const variable = project.variables.find((v) => v.id === varId);
+  const names = (variable && variable.flags) || [];
+  const grid = el('div', { class: 'flag-picker' });
+  for (let i = 0; i < VAR_FLAGS; i++) {
+    const bit = 1 << i;
+    const on = (mask & bit) !== 0;
+    const named = String(names[i] || '').trim();
+    grid.append(el('button', {
+      class: 'btn-flag' + (on ? ' active' : ''),
+      type: 'button',
+      title: named ? `Flag ${i + 1}: ${named}` : `Flag ${i + 1}`,
+      onclick: () => onChange(on ? (mask & ~bit) : (mask | bit)),
+    }, named || `Flag ${i + 1}`));
+  }
+  return grid;
 }
 
 // A multi-select grid of collision groups returning a bitmask.
@@ -479,6 +501,45 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       card.append(el('div', { class: 'event-branch-label' }, 'Then'));
       card.append(renderScriptEditor(app, scene, ev.then, app.save, ownerActor));
       card.append(el('div', { class: 'event-branch-label' }, 'Else'));
+      card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
+      break;
+    }
+    case 'VAR_FLAGS_ADD':
+    case 'VAR_FLAGS_CLEAR':
+    case 'VAR_FLAGS_SET': {
+      // The flag labels depend on which variable is picked, so changing it has
+      // to rebuild the grid — hence rerender() rather than plain changed().
+      const sel = varSelect('varId');
+      sel.addEventListener('change', () => rerender());
+      fields.append(el('label', {}, 'Variable', sel));
+      fields.append(el('label', { style: 'flex-basis:100%' },
+        flagChecks(project, ev.varId, ev.mask, (mask) => { ev.mask = mask; changed(); rerender(); })));
+      const verb = ev.type === 'VAR_FLAGS_CLEAR' ? 'false' : 'true';
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        ev.type === 'VAR_FLAGS_SET'
+          ? 'Replaces the variable with exactly these flags — anything not ticked is turned off. '
+            + 'With none ticked it clears them all.'
+          : `Sets the ticked flags to ${verb}. Flags you leave alone keep the value they had.`));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Eight true/false values share one variable. Name them in the Variables tab — '
+        + 'names live in the project only and cost nothing on the Arduboy.'));
+      break;
+    }
+    case 'IF_VAR_FLAGS': {
+      const sel = varSelect('varId');
+      sel.addEventListener('change', () => rerender());
+      fields.append(el('label', {}, 'If', sel));
+      fields.append(el('label', {}, 'Match', keySelect('mode', [
+        { key: 'all', label: 'All of these are set' },
+        { key: 'any', label: 'Any of these is set' },
+      ])));
+      fields.append(el('label', { style: 'flex-basis:100%' },
+        flagChecks(project, ev.varId, ev.mask, (mask) => { ev.mask = mask; changed(); rerender(); })));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Checked once — it never waits.'));
+      card.append(el('div', { class: 'event-branch-label' }, 'True'));
+      card.append(renderScriptEditor(app, scene, ev.then, app.save, ownerActor));
+      card.append(el('div', { class: 'event-branch-label' }, 'False'));
       card.append(renderScriptEditor(app, scene, ev.else, app.save, ownerActor));
       break;
     }

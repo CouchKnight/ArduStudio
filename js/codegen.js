@@ -12,7 +12,7 @@ import {
   PROJECTILE_DIRS, DIRECTIONS,
 } from './model.js';
 import { EXPR_STACK, EX } from './expression.js';
-import { MAX_DRAWN_TEXT } from './compiler.js';
+import { MAX_DRAWN_TEXT, FLAGS_ANY } from './compiler.js';
 import { FONT5X7 } from './font5x7.js';
 
 // Arduboy2 ships a 256-character font (1,280 bytes of flash). escapeCString()
@@ -1289,6 +1289,35 @@ void runScript(ScriptCtx& s) {
         s.pc = addr;
         break;
       }
+      //#IF OP_VAR_FLAGS_ADD
+      case 54: { // VAR_FLAGS_ADD — turn the mask's flags on, leave the rest
+        uint8_t v = codeAt(s.pc++);
+        uint8_t mask = codeAt(s.pc++);
+        if (v < NUM_VARS) vars[v] |= mask;
+        break;
+      }
+//#ENDIF
+      //#IF OP_VAR_FLAGS_CLEAR
+      case 55: { // VAR_FLAGS_CLEAR — turn the mask's flags off, leave the rest
+        uint8_t v = codeAt(s.pc++);
+        uint8_t mask = codeAt(s.pc++);
+        if (v < NUM_VARS) vars[v] &= ~mask;
+        break;
+      }
+//#ENDIF
+      //#IF OP_IF_VAR_FLAGS
+      case 56: { // IF_VAR_FLAGS
+        uint8_t v = codeAt(s.pc++);
+        uint8_t mask = codeAt(s.pc++);
+        uint8_t mode = codeAt(s.pc++);
+        uint16_t elseAddr = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
+        uint8_t cur = v < NUM_VARS ? vars[v] : 0;
+        bool pass = mode == ${FLAGS_ANY} ? (cur & mask) != 0 : (cur & mask) == mask;
+        if (!pass) s.pc = elseAddr;
+        break;
+      }
+//#ENDIF
       //#IF OP_TONE
       case 7: { // TONE
         uint16_t f = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);

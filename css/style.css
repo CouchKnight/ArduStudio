@@ -316,6 +316,33 @@ select.add-event { max-width: 100%; }
 .button-picker:has(.btn-key.wide) { grid-template-columns: repeat(4, 1fr); }
 .btn-key.wide { font-size: 12px; padding: 5px 2px; }
 
+/* Variable flags: two columns, because a named flag is a word rather than an
+   arrow and eight of them across would be unreadable. */
+.flag-picker { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; width: 100%; }
+.btn-flag {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.btn-flag:hover { border-color: var(--accent); }
+.btn-flag.active { background: #14405c; border-color: var(--accent); color: #fff; }
+.btn-flag.active::before { content: '☑ '; }
+.btn-flag:not(.active)::before { content: '☐ '; color: var(--muted); }
+
+/* Flag names in the Variables tab */
+.flag-names { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px 0; }
+.flag-names label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+.flag-names input { width: 100%; }
+
 /* Lifecycle script tabs in the inspector */
 .script-tabs {
   display: flex;
