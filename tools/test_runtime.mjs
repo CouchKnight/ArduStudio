@@ -2601,6 +2601,31 @@ console.log('— flash budget and pruning —');
     const sum = Object.values(c.flash.data).reduce((n, v) => n + v, 0);
     assert(sum === c.flash.dataBytes, 'the data breakdown adds up to the data total');
   }
+
+  {
+    // The margin covers uncertainty in how the engine's measured-apart pieces
+    // add up once compiled together. Art and text are literal arrays whose size
+    // is known to the byte, so adding more of them must not add more margin —
+    // otherwise a game grows a padding bill just for having a lot of scenery.
+    const base = makeDemoProject();
+    const fat = makeDemoProject();
+    // Two more sprites' worth of frames, scripted by nothing, so only the data
+    // total moves. "Always include" keeps pruning from removing them again.
+    for (let i = 0; i < 2; i++) {
+      const spr = makeSpriteOfType(`Bulk${i}`, 16, 16);
+      spr.keep = true;
+      fat.sprites.push(spr);
+    }
+    const a = compileProject(base).flash;
+    const b = compileProject(fat).flash;
+    assert(b.dataBytes > a.dataBytes,
+      `adding sprites grows the data total (${a.dataBytes} -> ${b.dataBytes})`);
+    assert(b.codeBytes === a.codeBytes, 'but not the engine code');
+    assert(b.margin === a.margin,
+      `and the margin is charged on code alone, so it does not move (${a.margin} vs ${b.margin})`);
+    assert(b.total - a.total === b.dataBytes - a.dataBytes,
+      'the estimate grows by exactly the data added, no more');
+  }
 }
 
 console.log('— bytecode sanity —');

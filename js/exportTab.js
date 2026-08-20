@@ -99,12 +99,13 @@ export function initExportTab(app) {
     for (const [name, bytes] of Object.entries(flash.data)) {
       if (bytes > 0) row(`  ${name}`, bytes);
     }
-    row('Safety margin', flash.margin, 'group');
+    row('Safety margin (on engine code)', flash.margin, 'group');
     budgetBody.append(table);
     budgetBody.append(el('p', { class: 'hint' },
       'The engine only carries the parts your game scripts, so these numbers move '
-      + 'as you build. The margin covers what the pieces cost together rather than '
-      + 'apart, which keeps the estimate on the high side of a real build.'));
+      + 'as you build. The margin covers what the engine pieces cost together rather '
+      + 'than apart, which keeps the estimate on the high side of a real build. Your '
+      + 'game\'s own data is measured exactly, so it carries no margin.'));
 
     const dropped = pruned.tiles.length + pruned.sprites.length + pruned.songs.length;
     if (!pruning) {

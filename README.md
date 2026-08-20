@@ -217,7 +217,7 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 431 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 435 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
                                 #   actor queries, expressions, switch, animation states, overlay,
                                 #   variable values in text
@@ -300,7 +300,7 @@ npm run check:flash       # compare the estimate against a real AVR build
 
 `check:flash` fails if the estimate drifts past 5% *or* falls below the real size — it has to
 err high, since a warning that arrives too late is the problem it exists to prevent. Currently
-3.6% high on the demo and 1.9% high on the all-features project.
+2.7% high on the demo and 1.0% high on the all-features project.
 
 Both tools build the way the Arduino IDE does, `-flto` included, from a single shared recipe in
 `tools/avr_build.mjs`. That matters more than it sounds: measuring without LTO puts the numbers
@@ -308,6 +308,12 @@ several hundred bytes off, which is the difference between a game that fits and 
 doesn't. Each subsystem is measured alone, so `measure:flash` finishes by comparing the summed
 model against real builds and publishing the shortfall as a safety margin — the estimate stays
 on the high side by construction rather than by luck.
+
+That margin is charged on **engine code only**. Your art, text and bytecode are literal arrays
+whose size is known to the byte, so they carry no padding; only the measured-apart engine
+pieces do. The margin is also deliberately smooth rather than rounded to whole percents — a
+recalibration that moves by half a point should not make every project on the Export tab appear
+to gain a couple of hundred bytes overnight.
 
 ## Sharing a game: the `.arduboy` package
 

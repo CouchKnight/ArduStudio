@@ -1338,11 +1338,15 @@ export function compileProject(project) {
     data: dataBreakdown,
     dataBytes,
   };
-  flash.parts = flash.baseline + flash.subsystemBytes + flash.opcodeBytes
-    + flash.extraBytes + flash.dataBytes;
-  // The parts are each measured in isolation, which lands a few percent below
-  // a real build once they are compiled together. See FLASH_SAFETY_MARGIN.
-  flash.margin = Math.round(flash.parts * FLASH_SAFETY_MARGIN);
+  // Engine code, whose size is measured per piece and so carries uncertainty.
+  flash.codeBytes = flash.baseline + flash.subsystemBytes + flash.opcodeBytes
+    + flash.extraBytes;
+  flash.parts = flash.codeBytes + flash.dataBytes;
+  // The margin covers what the engine's pieces cost together rather than apart
+  // (see FLASH_SAFETY_MARGIN) — a code effect, so it is charged on code only.
+  // Tile maps, sprites and strings are literal arrays whose size is known
+  // exactly, and padding them would tax a data-heavy game for nothing.
+  flash.margin = Math.round(flash.codeBytes * FLASH_SAFETY_MARGIN);
   flash.total = flash.parts + flash.margin;
   flash.over = flash.total - flash.budget;
 
