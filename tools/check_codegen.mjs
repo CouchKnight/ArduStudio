@@ -103,6 +103,15 @@ const singles = {
   'only-fade': () => [ev('FADE_OUT'), ev('FADE_IN')],
   'only-overlay': () => [ev('SHOW_OVERLAY'), ev('HIDE_OVERLAY')],
   'only-expr': (p) => [ev('EXPR_SET', { varId: p.variables[0].id, expression: '1 + 2' })],
+  'only-timer': (p) => [
+    ev('TIMER_ATTACH', {
+      timer: 0, frames: 30,
+      script: [ev('ADD_VAR', { varId: p.variables[0].id, delta: 1 })],
+    }),
+    ev('TIMER_RESTART', { timer: 0 }),
+    ev('TIMER_REMOVE', { timer: 0 }),
+  ],
+  'only-sub-var': (p) => [ev('SUB_VAR', { varId: p.variables[0].id, amount: 200 })],
   'only-var-flags': (p) => [
     ev('VAR_FLAGS_ADD', { varId: p.variables[0].id, mask: 0b0000_0101 }),
     ev('VAR_FLAGS_CLEAR', { varId: p.variables[0].id, mask: 0b0000_0010 }),

@@ -15,7 +15,7 @@ import {
   PROJECTILE_SRC_SELF, PROJECTILE_SRC_PLAYER,
   ACTOR_REF_SELF, ACTOR_REF_PLAYER,
   MAX_DRAWN_TEXT, DRAW_TEXT_OVERLAY, DRAW_TEXT_BACKGROUND, TEXT_VAR_MARKER,
-  FLAGS_ANY,
+  FLAGS_ANY, MAX_TIMERS,
 } from './compiler.js';
 import { evalExpression } from './expression.js';
 import { FONT5X7 } from './font5x7.js';
@@ -154,6 +154,12 @@ export class Emulator {
     // Bytecode button order: 0=LEFT 1=RIGHT 2=UP 3=DOWN 4=A 5=B.
     this.buttonScript = new Array(NUM_BUTTONS).fill(NO_SCRIPT);
     this.buttonOverride = 0;
+    // Timers, unlike button scripts, are cleared by loadScene: their scripts
+    // are compiled against one scene's actor list.
+    this.timerScript = new Array(MAX_TIMERS).fill(NO_SCRIPT);
+    this.timerPeriod = new Array(MAX_TIMERS).fill(0);
+    this.timerLeft = new Array(MAX_TIMERS).fill(0);
+    this.timerSelf = new Array(MAX_TIMERS).fill(0xff);
     this.camX = 0; this.camY = 0;
     // The player carries the same mutable fields an actor does, under the same
     // names, so the actor events can drive either through one resolver. There is
@@ -187,6 +193,7 @@ export class Emulator {
     this.rows = sc.rows;
     this.baseTiles = sc.tiles;    // "PROGMEM" map — never mutated
     this.overrides = [];          // SET_TILE lands here, like the C++ RAM table
+    for (let i = 0; i < MAX_TIMERS; i++) this.timerScript[i] = NO_SCRIPT;
     this.actors = sc.actors.map((a) => ({
       def: a,
       // Per-instance copies: `def` is the shared compiled scene object, so
@@ -378,11 +385,26 @@ export class Emulator {
     this.updateActors(!this.script.active);
     this.updateOverlay();
     this.updateProjectiles();
+    this.updateTimers();
     this.runUpdateScripts();
     this.updateCamera();
 
     this.prevButtons = this.buttons;
     this.draw();
+  }
+
+  // A timer counts frames down and queues its script at zero, then reloads.
+  // Queued rather than started, so a tick landing during dialogue is held
+  // instead of lost — the C++ updateTimers() does exactly this.
+  updateTimers() {
+    for (let i = 0; i < MAX_TIMERS; i++) {
+      if (this.timerScript[i] === NO_SCRIPT) continue;
+      if (this.timerLeft[i] > 0) this.timerLeft[i]--;
+      if (this.timerLeft[i] === 0) {
+        this.timerLeft[i] = this.timerPeriod[i];
+        this.queueScript(this.timerScript[i], this.timerSelf[i]);
+      }
+    }
   }
 
   // On Update scripts run every frame regardless of what the blocking VM is
@@ -817,6 +839,28 @@ export class Emulator {
           const elseAddr = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
           const hit = mode === FLAGS_ANY ? (v & mask) !== 0 : (v & mask) === mask;
           if (!hit) s.pc = elseAddr;
+          break;
+        }
+        case OP.TIMER_ATTACH: {
+          const t = code[s.pc++];
+          const period = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          const idx = code[s.pc] | (code[s.pc + 1] << 8); s.pc += 2;
+          if (t < MAX_TIMERS) {
+            this.timerScript[t] = idx;
+            this.timerPeriod[t] = period;
+            this.timerLeft[t] = period;
+            this.timerSelf[t] = s.self;
+          }
+          break;
+        }
+        case OP.TIMER_RESTART: {
+          const t = code[s.pc++];
+          if (t < MAX_TIMERS) this.timerLeft[t] = this.timerPeriod[t];
+          break;
+        }
+        case OP.TIMER_REMOVE: {
+          const t = code[s.pc++];
+          if (t < MAX_TIMERS) this.timerScript[t] = NO_SCRIPT;
           break;
         }
         case OP.JUMP: { s.pc = code[s.pc] | (code[s.pc + 1] << 8); break; }

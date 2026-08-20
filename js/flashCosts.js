@@ -5,7 +5,7 @@
 // engine changes; tools/test_runtime.mjs checks these against a real build so
 // they cannot drift silently.
 //
-// Measured 2026-08-18.
+// Measured 2026-08-20.
 
 // Usable flash on an Arduboy once the bootloader has its share.
 export const FLASH_BUDGET = 28672;
@@ -21,6 +21,7 @@ export const FLASH_SUBSYSTEM = {
   EXPR: 894,
   OVERLAY: 690,
   BUTTON_SCRIPTS: 472,
+  TIMERS: 382,
   SAVES: 368,
   FADE: 310,
   TEXT_VARS: 300,
@@ -64,6 +65,8 @@ export const FLASH_OPCODE = {
   OP_STORE_ACTOR_POS: 32,
   OP_SWITCH_SCENE: 16,
   OP_STORE_ACTOR_DIR: 5,
+  OP_TIMER_RESTART: 0,
+  OP_TIMER_REMOVE: 0,
 };
 
 // Leaving the Arduboy startup logo in (Export tab: "Skip the Arduboy boot
@@ -79,4 +82,4 @@ export const FLASH_PACKED_TILES = 134;
 // of the demo and the all-features project, rounded up. The Export tab applies
 // it so the estimate errs high — the direction that never tells someone a game
 // fits when it does not.
-export const FLASH_SAFETY_MARGIN = 0.01;
+export const FLASH_SAFETY_MARGIN = 0.02;

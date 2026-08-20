@@ -12,7 +12,7 @@ import {
   PROJECTILE_DIRS, DIRECTIONS,
 } from './model.js';
 import { EXPR_STACK, EX } from './expression.js';
-import { MAX_DRAWN_TEXT, FLAGS_ANY } from './compiler.js';
+import { MAX_DRAWN_TEXT, FLAGS_ANY, MAX_TIMERS } from './compiler.js';
 import { FONT5X7 } from './font5x7.js';
 
 // Arduboy2 ships a 256-character font (1,280 bytes of flash). escapeCString()
@@ -341,6 +341,7 @@ uint8_t sceneStackTop = 0;
 
 // Init and hit scripts waiting for the VM to become free.
 #define SCRIPT_QUEUE_DEPTH ${SCRIPT_QUEUE_DEPTH}
+#define MAX_TIMERS ${MAX_TIMERS}
 struct QueuedScript { uint16_t idx; uint8_t self; };
 QueuedScript scriptQueue[SCRIPT_QUEUE_DEPTH];
 uint8_t scriptQueueLen = 0;
@@ -477,6 +478,18 @@ const uint8_t buttonBits[NUM_BUTTONS] PROGMEM = {
 //#IF BUTTON_SCRIPTS
 uint8_t buttonScript[NUM_BUTTONS];
 uint8_t buttonOverride = 0;
+//#ENDIF
+//#IF TIMERS
+// A timer counts frames down and runs its script when it reaches zero, then
+// reloads. The self it stores is whoever attached it, so Self inside a timer
+// script means
+// the actor that started it. Cleared by loadScene — script actor references
+// are scene-relative, so a timer surviving a scene change would aim at the
+// wrong actor.
+uint16_t timerScript[MAX_TIMERS];
+uint16_t timerPeriod[MAX_TIMERS];
+uint16_t timerLeft[MAX_TIMERS];
+uint8_t timerSelf[MAX_TIMERS];
 //#ENDIF
 
 
@@ -689,6 +702,11 @@ void loadScene(uint8_t idx, uint8_t px, uint8_t py, bool runEnter) {
   sceneW = curScene.w;
   sceneH = curScene.h;
   overrideCount = 0;
+//#IF TIMERS
+  // Timer scripts are compiled against this scene's actor list, so they cannot
+  // outlive it.
+  for (uint8_t i = 0; i < MAX_TIMERS; i++) timerScript[i] = NO_SCRIPT;
+//#ENDIF
   actorCount = curScene.actorCount;
   if (actorCount > MAX_SCENE_ACTORS) actorCount = MAX_SCENE_ACTORS;
   for (uint8_t i = 0; i < actorCount; i++) {
@@ -1302,6 +1320,36 @@ void runScript(ScriptCtx& s) {
         uint8_t v = codeAt(s.pc++);
         uint8_t mask = codeAt(s.pc++);
         if (v < NUM_VARS) vars[v] &= ~mask;
+        break;
+      }
+//#ENDIF
+      //#IF OP_TIMER_ATTACH
+      case 57: { // TIMER_ATTACH
+        uint8_t t = codeAt(s.pc++);
+        uint16_t period = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
+        uint16_t idx = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
+        if (t < MAX_TIMERS) {
+          timerScript[t] = idx;
+          timerPeriod[t] = period;
+          timerLeft[t] = period;
+          timerSelf[t] = s.self; // Self inside the timer script is whoever set it
+        }
+        break;
+      }
+//#ENDIF
+      //#IF OP_TIMER_RESTART
+      case 58: { // TIMER_RESTART
+        uint8_t t = codeAt(s.pc++);
+        if (t < MAX_TIMERS) timerLeft[t] = timerPeriod[t];
+        break;
+      }
+//#ENDIF
+      //#IF OP_TIMER_REMOVE
+      case 59: { // TIMER_REMOVE
+        uint8_t t = codeAt(s.pc++);
+        if (t < MAX_TIMERS) timerScript[t] = NO_SCRIPT;
         break;
       }
 //#ENDIF
@@ -1990,6 +2038,21 @@ void checkTriggers() {
   }
 }
 
+//#IF TIMERS
+void updateTimers() {
+  for (uint8_t i = 0; i < MAX_TIMERS; i++) {
+    if (timerScript[i] == NO_SCRIPT) continue;
+    if (timerLeft[i] > 0) timerLeft[i]--;
+    if (timerLeft[i] == 0) {
+      timerLeft[i] = timerPeriod[i];
+      // Queued rather than started: a timer can come due while dialogue is up,
+      // and dropping it would silently lose the tick.
+      queueScript(timerScript[i], timerSelf[i]);
+    }
+  }
+}
+//#ENDIF
+
 //#IF BUTTON_SCRIPTS
 void checkButtonScripts() {
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
@@ -2258,6 +2321,9 @@ void loop() {
 //#ENDIF
 //#IF PROJECTILES
   updateProjectiles();
+//#ENDIF
+//#IF TIMERS
+  updateTimers();
 //#ENDIF
 //#IF UPDATE_SCRIPTS
   runUpdateScripts();

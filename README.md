@@ -64,8 +64,9 @@ in the **▶ Play** tab, then pick it apart to see how everything is wired.
 
 `Show Dialogue` (auto word-wrapped, paged), `Display Menu` (2–8 options, two layouts,
 optional cancel), `Display Multiple Choice`, `If Variable… / Else`, `Set / Add Variable`,
-`Math Functions`, `Evaluate Math Expression`,
+`Subtract From Variable`, `Math Functions`, `Evaluate Math Expression`,
 `Variable Flags Add / Clear / Set`, `If Variable Flags…`,
+`Attach Script To Timer`, `Restart Timer`, `Remove Timer Script`,
 `Change Scene`, `Teleport Player`, `Set Tile` (open doors, reveal passages), `Hide / Show Actor`,
 `Move Actor` (walks and blocks the script until it arrives, or teleports),
 `Set Actor Sprite`, `Set Actor Direction`, `Set Actor Movement Speed`, `Actor Effects`
@@ -109,6 +110,17 @@ lists which flags are currently set. Names live in the project file only and are
 written into the sketch, so they cost nothing on the device. The whole feature is three
 opcodes totalling ~240 bytes, and only in a game that uses it — `Set` needs no opcode at
 all, since replacing a byte is what `Set Variable` already does.
+
+**Timers** run a script every N frames without a script having to sit and wait for it.
+`Attach Script To Timer` sets one of **four** independent timers going; it repeats until
+`Remove Timer Script` stops it, and `Restart Timer` puts the countdown back to a full period.
+That is a poison tick, an enemy attack cooldown, a torch burning down, a respawn — anything on
+a clock. Inside the script, `Self` means whichever actor attached the timer, and a tick that
+comes due while dialogue is up waits its turn rather than being dropped.
+
+Timers are **cleared by a scene change**. A timer script is compiled against one scene's actor
+list, so letting it follow you into the next scene would point `Self` at the wrong actor;
+re-attach it in the new scene's `On Init` if it should carry on.
 
 **Loop** repeats its events forever, so something inside must end it — a `Wait` to stay
 responsive, or `Stop Script` / `Change Scene` to break out. A loop with none of those never
@@ -205,7 +217,7 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 408 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 431 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
                                 #   actor queries, expressions, switch, animation states, overlay,
                                 #   variable values in text
@@ -230,7 +242,7 @@ Against the ATmega32u4's 28,672 bytes of usable flash and 2,560 bytes of RAM:
 |---|---|---|
 | Empty project (the floor) | 12,960 | 1,726 |
 | Key Quest demo | 16,032 | 1,803 |
-| Every subsystem and every event at once | 22,874 | 1,928 |
+| Every subsystem and every event at once | 23,420 | 1,952 |
 
 Even a game using *everything* leaves ~6 KB for its own scenes and art, and a typical one has
 far more.
@@ -288,7 +300,7 @@ npm run check:flash       # compare the estimate against a real AVR build
 
 `check:flash` fails if the estimate drifts past 5% *or* falls below the real size — it has to
 err high, since a warning that arrives too late is the problem it exists to prevent. Currently
-2.6% high on the demo and 1.5% high on the all-features project.
+3.6% high on the demo and 1.9% high on the all-features project.
 
 Both tools build the way the Arduino IDE does, `-flto` included, from a single shared recipe in
 `tools/avr_build.mjs`. That matters more than it sounds: measuring without LTO puts the numbers

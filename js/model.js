@@ -527,6 +527,11 @@ export function makeEvent(type) {
     case 'SWITCH_SCENE':return { id: uid('ev'), type, sceneId: '', x: 2, y: 4 };
     case 'SET_VAR':     return { id: uid('ev'), type, varId: '', value: 1 };
     case 'ADD_VAR':     return { id: uid('ev'), type, varId: '', delta: 1 };
+    case 'SUB_VAR':     return { id: uid('ev'), type, varId: '', amount: 1 };
+    // `timer` is a slot number 0..3; `frames` is the period, 60 = one second.
+    case 'TIMER_ATTACH':  return { id: uid('ev'), type, timer: 0, frames: 60, script: [] };
+    case 'TIMER_RESTART':
+    case 'TIMER_REMOVE':  return { id: uid('ev'), type, timer: 0 };
     // Store the result of a math expression, e.g. "$health - $defence".
     case 'EXPR_SET':    return { id: uid('ev'), type, varId: '', expression: '' };
     // The same store behind a picker: variable, operation, and a value that is
@@ -640,9 +645,13 @@ export const EVENT_DEFS = [
   { type: 'HIDE_OVERLAY', label: 'Hide Overlay',      group: 'Overlay' },
   { type: 'OVERLAY_MOVE', label: 'Overlay Move To',   group: 'Overlay' },
   { type: 'OVERLAY_CUTOFF', label: 'Set Overlay Scanline Cutoff', group: 'Overlay' },
+  { type: 'TIMER_ATTACH',  label: 'Attach Script To Timer', group: 'Timer' },
+  { type: 'TIMER_RESTART', label: 'Restart Timer',          group: 'Timer' },
+  { type: 'TIMER_REMOVE',  label: 'Remove Timer Script',    group: 'Timer' },
   { type: 'SEED_RNG',     label: 'Seed Random Number Generator', group: 'Random' },
   { type: 'SET_VAR',      label: 'Set Variable',      group: 'Variables' },
   { type: 'ADD_VAR',      label: 'Add To Variable',   group: 'Variables' },
+  { type: 'SUB_VAR',      label: 'Subtract From Variable', group: 'Variables' },
   { type: 'MATH_FN',      label: 'Math Functions',    group: 'Variables' },
   { type: 'EXPR_SET',     label: 'Evaluate Math Expression', group: 'Variables' },
   { type: 'IF_VAR',       label: 'If Variable…',      group: 'Variables' },
