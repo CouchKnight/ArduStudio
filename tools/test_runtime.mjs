@@ -11,7 +11,7 @@ import {
   renameVariableReferences, cloneWithNewIds, retargetActorRefs, forEachEvent,
   makeProject, makeSprite as makeSpriteOfType, makeTile as makeTileOfType,
 } from '../js/model.js';
-import { compileProject, TEXT_VAR_MARKER, displayWidth, OP } from '../js/compiler.js';
+import { compileProject, TEXT_VAR_MARKER, displayWidth, OP, NO_SCRIPT } from '../js/compiler.js';
 import { FLASH_SUBSYSTEM } from '../js/flashCosts.js';
 import { generateIno } from '../js/codegen.js';
 import { compileExpression, evalExpression } from '../js/expression.js';
@@ -2257,6 +2257,195 @@ console.log('— variable flags —');
       'the Variables tab counts If Variable Flags as a use');
     assert((usages.get(proj.variables[1].id) || []).length > 0,
       'and walks into its branches to find nested uses');
+  }
+}
+
+console.log('— subtract from variable —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+  const run = (events, seed) => {
+    const proj = makeDemoProject();
+    const v = proj.variables[0];
+    proj.scenes[0].actors[0].scripts.interact = [
+      ev('SET_VAR', { varId: v.id, value: seed }),
+      ...events(v),
+    ];
+    const c = compileProject(proj);
+    const e = new Emulator(c, { onTone: () => {} });
+    runActorScript(e, 0);
+    return { vars: e.vars, warnings: c.warnings, compiled: c };
+  };
+
+  assert(run((v) => [ev('SUB_VAR', { varId: v.id, amount: 30 })], 100).vars[0] === 70,
+    'Subtract takes the amount off');
+
+  // The whole point of the event: it floors rather than wrapping round.
+  assert(run((v) => [ev('SUB_VAR', { varId: v.id, amount: 30 })], 10).vars[0] === 0,
+    'Subtracting more than the variable holds lands on 0, not 236');
+
+  // Over 128 does not fit ADD_VAR's signed byte, so it goes out as two
+  // instructions. Saturation is what makes that identical to one big one.
+  assert(run((v) => [ev('SUB_VAR', { varId: v.id, amount: 200 })], 255).vars[0] === 55,
+    'Subtracting more than 128 still gives the right answer');
+  assert(run((v) => [ev('SUB_VAR', { varId: v.id, amount: 200 })], 50).vars[0] === 0,
+    'and still floors at 0 when split across two instructions');
+  assert(run((v) => [ev('SUB_VAR', { varId: v.id, amount: 255 })], 255).vars[0] === 0,
+    'the largest subtraction empties a full variable');
+
+  // No opcode of its own — it is Add To Variable going the other way.
+  {
+    const c = run((v) => [ev('SUB_VAR', { varId: v.id, amount: 5 })], 10).compiled;
+    assert(c.features.OP_ADD_VAR === true, 'Subtract compiles to the Add To Variable opcode');
+    assert(!Object.keys(c.features).includes('OP_SUB_VAR'),
+      'and adds no opcode of its own');
+  }
+
+  {
+    const w = run((v) => [ev('SUB_VAR', { varId: v.id, amount: 0 })], 10).warnings;
+    assert(w.some((x) => /takes away nothing/.test(x)),
+      'subtracting zero warns rather than emitting a no-op');
+  }
+}
+
+console.log('— timers —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+  // Attach a timer from the villager's interact script, then let frames pass.
+  const withTimer = (attach, extra = []) => {
+    const proj = makeDemoProject();
+    const v = proj.variables[0];
+    proj.scenes[0].actors[0].scripts.interact = [
+      ev('SET_VAR', { varId: v.id, value: 0 }),
+      attach(v),
+      ...extra.map((f) => f(v)),
+    ];
+    const c = compileProject(proj);
+    const e = new Emulator(c, { onTone: () => {} });
+    runActorScript(e, 0);
+    return { emu: e, compiled: c, varId: v.id };
+  };
+  const tick = (e, n) => { for (let i = 0; i < n; i++) e.step(); };
+
+  // Fires on the period, and keeps firing.
+  {
+    const { emu } = withTimer((v) => ev('TIMER_ATTACH', {
+      timer: 0, frames: 10, script: [ev('ADD_VAR', { varId: v.id, delta: 1 })],
+    }));
+    tick(emu, 9);
+    assert(emu.vars[0] === 0, 'a timer has not fired before its period is up');
+    tick(emu, 1);
+    assert(emu.vars[0] === 1, 'it fires when the period elapses');
+    tick(emu, 10);
+    assert(emu.vars[0] === 2, 'and again on the next period — it repeats');
+    tick(emu, 30);
+    assert(emu.vars[0] === 5, 'and keeps repeating (5 ticks over 50 frames)');
+  }
+
+  // Remove stops it.
+  {
+    const { emu } = withTimer((v) => ev('TIMER_ATTACH', {
+      timer: 0, frames: 10, script: [ev('ADD_VAR', { varId: v.id, delta: 1 })],
+    }));
+    tick(emu, 10);
+    const after = emu.vars[0];
+    // Drive Remove through the bytecode rather than poking the field.
+    const proj2 = makeDemoProject();
+    const v2 = proj2.variables[0];
+    proj2.scenes[0].actors[0].scripts.interact = [
+      ev('TIMER_ATTACH', { timer: 0, frames: 10, script: [ev('ADD_VAR', { varId: v2.id, delta: 1 })] }),
+      ev('TIMER_REMOVE', { timer: 0 }),
+    ];
+    const e2 = new Emulator(compileProject(proj2), { onTone: () => {} });
+    runActorScript(e2, 0);
+    tick(e2, 60);
+    assert(after === 1 && e2.vars[0] === 0, 'Remove Timer Script stops it firing');
+  }
+
+  // Restart pushes the next tick back out to a full period.
+  {
+    const proj = makeDemoProject();
+    const v = proj.variables[0];
+    proj.scenes[0].actors[0].scripts.interact = [
+      ev('TIMER_ATTACH', { timer: 0, frames: 60, script: [ev('ADD_VAR', { varId: v.id, delta: 1 })] }),
+    ];
+    // A second actor to run the restart from — the demo scene ships with one.
+    // The period is long because runActorScript spends a few frames pressing A,
+    // and those frames count down the timer like any other.
+    const restarter = makeActorOfType('Restarter', proj.sprites[1].id, 10, 5);
+    restarter.scripts.interact = [ev('TIMER_RESTART', { timer: 0 })];
+    proj.scenes[0].actors.push(restarter);
+    const e = new Emulator(compileProject(proj), { onTone: () => {} });
+    runActorScript(e, 0);
+    tick(e, 40);                   // 20-ish frames still to run
+    runActorScript(e, 1);          // restart: back to a full 60
+    tick(e, 40);
+    assert(e.vars[0] === 0, 'Restart Timer pushes the tick back out to a full period');
+    tick(e, 25);
+    assert(e.vars[0] === 1, 'and it fires a full period after the restart');
+  }
+
+  // Four run independently.
+  {
+    const proj = makeDemoProject();
+    const [a, b] = proj.variables;
+    proj.scenes[0].actors[0].scripts.interact = [
+      ev('TIMER_ATTACH', { timer: 0, frames: 5, script: [ev('ADD_VAR', { varId: a.id, delta: 1 })] }),
+      ev('TIMER_ATTACH', { timer: 3, frames: 20, script: [ev('ADD_VAR', { varId: b.id, delta: 1 })] }),
+    ];
+    const e = new Emulator(compileProject(proj), { onTone: () => {} });
+    runActorScript(e, 0);
+    // 22 rather than 20: when both come due on the same frame one runs and the
+    // other queues, so the last tick needs a frame to land.
+    tick(e, 22);
+    assert(e.vars[0] === 4 && e.vars[1] === 1,
+      `two timers keep their own periods (got ${e.vars[0]}, ${e.vars[1]})`);
+  }
+
+  // Cleared by a scene change: a timer script is compiled against one scene's
+  // actor list, so letting it outlive the scene would aim it at the wrong actor.
+  {
+    const proj = makeDemoProject();
+    const v = proj.variables[0];
+    proj.scenes[0].actors[0].scripts.interact = [
+      ev('TIMER_ATTACH', { timer: 0, frames: 10, script: [ev('ADD_VAR', { varId: v.id, delta: 1 })] }),
+    ];
+    const e = new Emulator(compileProject(proj), { onTone: () => {} });
+    runActorScript(e, 0);
+    tick(e, 10);
+    assert(e.vars[0] === 1, 'timer fired before the scene change');
+    e.loadScene(1, 2, 2, false);
+    tick(e, 60);
+    assert(e.vars[0] === 1, 'and stops when the scene changes');
+    assert(e.timerScript.every((x) => x === NO_SCRIPT), 'every slot is cleared');
+  }
+
+  // An empty timer script is a no-op waiting to confuse someone.
+  {
+    const proj = makeDemoProject();
+    proj.scenes[0].actors[0].scripts.interact = [ev('TIMER_ATTACH', { timer: 0, frames: 10, script: [] })];
+    const c = compileProject(proj);
+    assert(c.warnings.some((w) => /empty script/.test(w)),
+      'attaching an empty timer script warns rather than compiling');
+  }
+
+  // The subsystem is off unless a game uses it.
+  {
+    assert(compileProject(makeDemoProject()).features.TIMERS !== true,
+      'a game with no timers does not carry the timer subsystem');
+  }
+}
+
+console.log('— generated sketch integrity —');
+{
+  // codegen.js builds the whole engine inside one template literal, so a
+  // stray backtick in a C++ comment ends it early and everything after
+  // becomes JavaScript. That has broken a release once. A leftover ${ in the
+  // output is the tell-tale of the subtler version, where it still parses.
+  for (const [label, project] of [['demo', makeDemoProject()],
+    ['all-features', makeAllFeaturesProject()]]) {
+    const { ino } = generateIno(project);
+    assert(!ino.includes('${'),
+      `[${label}] the generated sketch has no unresolved template placeholders`);
   }
 }
 

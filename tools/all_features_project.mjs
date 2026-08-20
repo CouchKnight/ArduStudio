@@ -28,6 +28,13 @@ export function makeAllFeaturesProject() {
     ev('LOOP', { events: [ev('ADD_VAR', { varId: v.id, delta: 1 }), ev('WAIT', { frames: 1 }), ev('END_SCRIPT', {})] }),
     ev('START_SCRIPT', { target: target.id, slot: 'hit' }),
     ev('EXPR_SET', { varId: v.id, expression: `min($${v.name} * 2, 100)` }),
+    ev('SUB_VAR', { varId: v.id, amount: 200 }),
+    ev('TIMER_ATTACH', {
+      timer: 0, frames: 60,
+      script: [ev('ADD_VAR', { varId: v.id, delta: 1 })],
+    }),
+    ev('TIMER_RESTART', { timer: 0 }),
+    ev('TIMER_REMOVE', { timer: 0 }),
     ev('VAR_FLAGS_ADD', { varId: v.id, mask: 0b0000_0101 }),
     ev('VAR_FLAGS_CLEAR', { varId: v.id, mask: 0b0000_0010 }),
     ev('VAR_FLAGS_SET', { varId: v.id, mask: 0b1000_0001 }),

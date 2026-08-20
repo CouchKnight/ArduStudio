@@ -396,6 +396,24 @@ running (8 deep, then further starts are dropped).</p>
 script that reads or writes it, so you can tell at a glance what a variable does — and what deleting
 it would break.</p>
 
+<h3>Timers</h3>
+<p>A <b>timer</b> runs a script every so often without any script having to sit and wait for
+it — a poison tick, an enemy attack cooldown, a torch burning down, a respawn.</p>
+<ul>
+  <li><b>Attach Script To Timer</b> — pick one of <b>four</b> timers and a period in frames
+      (60 = one second), then write the script it runs. It repeats until removed.</li>
+  <li><b>Restart Timer</b> — puts the countdown back to a full period without changing the
+      script. Handy for "reset the cooldown because the player just blocked".</li>
+  <li><b>Remove Timer Script</b> — detaches the script so the timer stops.</li>
+</ul>
+<p>Inside a timer script, <b>Self</b> means whichever actor attached the timer. A tick that
+comes due while dialogue or a menu is up is <i>queued</i>, not dropped, so it runs as soon as
+the script VM is free.</p>
+<p class="hint">Timers are cleared when the scene changes. A timer script is compiled against
+one scene's actor list, so a timer that followed you into the next scene would aim <b>Self</b>
+at whatever actor happened to sit at that index there. If a timer should carry on, attach it
+again in the new scene's <i>On Init</i>.</p>
+
 <h3>Variable flags</h3>
 <p>Most variables end up holding a yes/no — <i>has the key</i>, <i>met the king</i>,
 <i>door open</i> — and spending a whole byte on one bit runs you out of variables long
@@ -426,6 +444,8 @@ independently, and because <code>== 5</code> does not say what it means.</p>
 <ul>
   <li>Variables are bytes (0–255). Use them as counters, states, or — eight at a time —
       as flags (see <i>Variable flags</i> above).</li>
+  <li><b>Add To Variable</b> and <b>Subtract From Variable</b> both stop at 0 and 255 rather
+      than wrapping, so overkill damage floors at 0 instead of rolling round to 251.</li>
   <li>Actor visibility resets when a scene loads. To keep an actor gone forever, set a variable when it
       disappears and hide it again in the scene's <i>On Init</i> script (see the slime in the Key Quest demo).</li>
   <li><b>Set Tile</b> is great for opening doors and revealing passages — combine with the solid flag of tiles.</li>

@@ -12,7 +12,14 @@ import {
 import { writeClip, readClip } from './clipboard.js';
 import {
   MAX_ACTOR_DISTANCE, ANIM_SPEEDS, OVERLAY_SPEEDS, MAX_SWITCH_CASES,
+  MAX_TIMERS, MAX_TIMER_FRAMES,
 } from './compiler.js';
+
+// The timer slots, as a dropdown. Numbered rather than named: unlike a
+// variable's flags, a timer is a slot you occupy for a moment, not a thing
+// you refer to all over a game.
+const TIMER_SLOTS = Array.from({ length: MAX_TIMERS },
+  (_, i) => ({ value: i, label: `Timer ${i + 1}` }));
 import { compileExpression } from './expression.js';
 
 // Direction codes by name, for the Store Actor Direction hint.
@@ -395,6 +402,57 @@ function renderEventCard(app, scene, list, index, rerender, ownerActor = null) {
       fields.append(el('label', {}, '+', numInput('delta', -128, 127)));
       fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
         'Stops at 0 and 255 rather than wrapping round.'));
+      break;
+    case 'SUB_VAR':
+      fields.append(el('label', {}, 'Variable', varSelect('varId')));
+      fields.append(el('label', {}, '−', el('input', {
+        type: 'number', min: 1, max: 255, value: ev.amount,
+        onchange: (e) => {
+          ev.amount = Math.max(0, Math.min(255, parseInt(e.target.value, 10) || 0));
+          changed();
+        },
+      })));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Stops at 0 rather than wrapping round, so taking 30 off a 10 leaves 0 — '
+        + 'not 236.'));
+      break;
+    case 'TIMER_ATTACH': {
+      fields.append(el('label', {}, 'Timer', optionSelect('timer', TIMER_SLOTS)));
+      const secs = el('span', { class: 'hint' });
+      const showSecs = () => {
+        secs.textContent = `= ${(Math.max(1, ev.frames | 0) / 60).toFixed(2).replace(/\.?0+$/, '')} s`;
+      };
+      fields.append(el('label', {}, 'Every', el('input', {
+        type: 'number', min: 1, max: MAX_TIMER_FRAMES, value: ev.frames,
+        onchange: (e) => {
+          ev.frames = Math.max(1, Math.min(MAX_TIMER_FRAMES, parseInt(e.target.value, 10) || 1));
+          changed();
+          showSecs();
+        },
+      }), ' frames'));
+      fields.append(secs);
+      showSecs();
+      card.append(el('div', { class: 'event-branch-label' }, 'On each tick'));
+      card.append(renderScriptEditor(app, scene, ev.script, app.save, ownerActor));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Repeats until the timer is removed. Inside the script, Self means whichever '
+        + 'actor attached it. A tick that lands while dialogue is up waits its turn '
+        + 'rather than being lost.'));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Timers are cleared by a scene change — the script is written against this '
+        + 'scene\'s actors, so it cannot follow you out of it. Re-attach in the next '
+        + 'scene\'s On Init if you need it to carry on.'));
+      break;
+    }
+    case 'TIMER_RESTART':
+      fields.append(el('label', {}, 'Timer', optionSelect('timer', TIMER_SLOTS)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Puts the countdown back to a full period without changing the script.'));
+      break;
+    case 'TIMER_REMOVE':
+      fields.append(el('label', {}, 'Timer', optionSelect('timer', TIMER_SLOTS)));
+      fields.append(el('span', { class: 'hint', style: 'flex-basis:100%' },
+        'Detaches the script so the timer stops firing.'));
       break;
     case 'EXPR_SET': {
       fields.append(el('label', {}, 'Variable', varSelect('varId')));

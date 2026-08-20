@@ -35,6 +35,7 @@ const SUBSYSTEM_EVENTS = {
   SAVES: ['Save Game', 'Load Game', 'Save Exists → Var', 'Delete Save'],
   SONGS: ['Play Song', 'Stop Song'],
   MENUS: ['Display Menu', 'Display Multiple Choice'],
+  TIMERS: ['Attach Script To Timer', 'Restart Timer', 'Remove Timer Script'],
   BUTTON_SCRIPTS: ['Attach Script To Button', 'Remove Button Script'],
   SCENE_STACK: ['Push Scene', 'Pop Scene', 'Pop All Scenes'],
   FADE: ['Fade In', 'Fade Out', 'Push Scene', 'Pop Scene', 'Pop All Scenes'],
@@ -109,7 +110,16 @@ export const OP = {
   VAR_FLAGS_CLEAR: 55, // varIdx, mask — turns the mask's flags off
   // varIdx, mask, mode (0 = all of the mask set, 1 = any of it), elseLo, elseHi
   IF_VAR_FLAGS: 56,
+  // Timers. Attach carries the period and the script; the rest just name a slot.
+  TIMER_ATTACH: 57,  // timerIdx, periodLo, periodHi, scriptIdxLo, scriptIdxHi
+  TIMER_RESTART: 58, // timerIdx — back to a full period, script untouched
+  TIMER_REMOVE: 59,  // timerIdx
 };
+
+// Timers that can run at once. Each costs 7 bytes of RAM in both runtimes.
+export const MAX_TIMERS = 4;
+// Longest a timer can be set to: a uint16 of frames, about 18 minutes.
+export const MAX_TIMER_FRAMES = 65535;
 
 // IF_VAR_FLAGS match modes.
 export const FLAGS_ALL = 0;
@@ -553,6 +563,43 @@ export function compileProject(project) {
           emitOp(OP.ADD_VAR, idx, int8byte(ev.delta));
           break;
         }
+        case 'SUB_VAR': {
+          const idx = varIndex.get(ev.varId);
+          if (idx === undefined) { warnings.push(`${ctx}: Subtract From Variable has no variable selected — skipped`); break; }
+          let amount = byte(ev.amount);
+          if (amount === 0) {
+            warnings.push(`${ctx}: Subtract From Variable takes away nothing — skipped`);
+            break;
+          }
+          // No opcode of its own: this is Add To Variable going the other way.
+          // That operand is a signed byte, so anything past 128 goes out as two
+          // instructions — safe because the runtime saturates at 0 rather than
+          // wrapping, so 200 off a 50 lands on 0 either way.
+          while (amount > 0) {
+            const step = Math.min(128, amount);
+            emitOp(OP.ADD_VAR, idx, int8byte(-step));
+            amount -= step;
+          }
+          break;
+        }
+        case 'TIMER_ATTACH': {
+          if (!ev.script || !ev.script.length) {
+            warnings.push(`${ctx}: Attach Script To Timer has an empty script — skipped`);
+            break;
+          }
+          const t = timerIndex(ev.timer);
+          const frames = Math.max(1, Math.min(MAX_TIMER_FRAMES, ev.frames | 0));
+          const scriptIdx = addScript(ev.script, scene, `${ctx} → timer ${t + 1} script`);
+          emitOp(OP.TIMER_ATTACH, t, frames & 0xff, (frames >> 8) & 0xff,
+            scriptIdx & 0xff, (scriptIdx >> 8) & 0xff);
+          break;
+        }
+        case 'TIMER_RESTART':
+          emitOp(OP.TIMER_RESTART, timerIndex(ev.timer));
+          break;
+        case 'TIMER_REMOVE':
+          emitOp(OP.TIMER_REMOVE, timerIndex(ev.timer));
+          break;
         case 'IF_VAR': {
           const idx = varIndex.get(ev.varId);
           if (idx === undefined) { warnings.push(`${ctx}: If Variable has no variable selected — skipped`); break; }
@@ -1192,6 +1239,7 @@ export function compileProject(project) {
     SAVES: uses(OP.SAVE_GAME, OP.LOAD_GAME, OP.SAVE_CHECK, OP.DELETE_SAVE),
     SONGS: uses(OP.PLAY_SONG, OP.STOP_SONG) && songs.length > 0,
     MENUS: uses(OP.MENU),
+    TIMERS: uses(OP.TIMER_ATTACH, OP.TIMER_RESTART, OP.TIMER_REMOVE),
     BUTTON_SCRIPTS: uses(OP.ATTACH_SCRIPT, OP.REMOVE_BUTTON_SCRIPT),
     SCENE_STACK: uses(OP.PUSH_SCENE, OP.POP_SCENE, OP.POP_ALL_SCENES),
     FADE: uses(OP.FADE_IN, OP.FADE_OUT, OP.PUSH_SCENE, OP.POP_SCENE, OP.POP_ALL_SCENES),
@@ -1332,6 +1380,9 @@ export function compileProject(project) {
 function clampTile(v, max) { return Math.max(0, Math.min(max - 1, v | 0)); }
 function clampByte(v, lo, hi) { return Math.max(lo, Math.min(hi, v | 0)); }
 function byte(v) { return Math.max(0, Math.min(255, v | 0)); }
+
+// Which timer slot an event names, clamped to the slots that exist.
+function timerIndex(v) { return Math.max(0, Math.min(MAX_TIMERS - 1, (v | 0))); }
 
 // A flag mask, clamped to the eight bits a byte variable actually has.
 function flagMask(v) { return (v | 0) & ((1 << VAR_FLAGS) - 1); }

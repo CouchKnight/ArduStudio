@@ -55,6 +55,10 @@ const VARIANTS = {
   SAVES: () => [makeEvent('SAVE_GAME'), makeEvent('LOAD_GAME')],
   // Linking ArduboyTools at all. A single Play Tone is enough to need it.
   AUDIO: () => [makeEvent('TONE')],
+  TIMERS: (p) => [Object.assign(makeEvent('TIMER_ATTACH'), {
+    timer: 0, frames: 60,
+    script: [Object.assign(makeEvent('ADD_VAR'), { varId: p.variables[0].id, delta: 1 })],
+  })],
   MENUS: (p) => [Object.assign(makeEvent('MENU'), {
     varId: p.variables[0].id, options: ['One', 'Two'],
   })],
@@ -257,6 +261,26 @@ for (const [name, build] of Object.entries(OPCODE_VARIANTS)) {
   const dataBytes = generateIno(p).compiled.code.length - generateIno(bare()).compiled.code.length;
   opcodes[`OP_${name}`] = Math.max(0, n - baseline - dataBytes);
   console.log(`  ${`OP_${name}`.padEnd(20)} +${String(opcodes[`OP_${name}`]).padStart(5)} bytes`);
+}
+
+{
+  // Restart and Remove each switch TIMERS on by themselves, so measured from
+  // the bare baseline they would each carry the whole timer table and its
+  // per-frame tick a second time.
+  const timersOnly = bare();
+  timersOnly.scenes[0].scripts.init.push(Object.assign(makeEvent('TIMER_ATTACH'), {
+    timer: 0,
+    frames: 60,
+    script: [Object.assign(makeEvent('ADD_VAR'), { varId: timersOnly.variables[0].id, delta: 1 })],
+  }));
+  const timersBase = flashOf('timers_only', timersOnly);
+  for (const [name, type] of [['OP_TIMER_RESTART', 'TIMER_RESTART'], ['OP_TIMER_REMOVE', 'TIMER_REMOVE']]) {
+    const p = bare();
+    p.scenes[0].scripts.init.push(...timersOnly.scenes[0].scripts.init.slice(1));
+    p.scenes[0].scripts.init.push(Object.assign(makeEvent(type), { timer: 0 }));
+    opcodes[name] = Math.max(0, flashOf(name.toLowerCase(), p) - timersBase);
+    console.log(`  ${name.padEnd(20)} +${String(opcodes[name]).padStart(5)} bytes (on top of TIMERS)`);
+  }
 }
 
 console.log('\n== measuring encodings and boot ==');

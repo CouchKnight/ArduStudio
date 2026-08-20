@@ -31,7 +31,7 @@ export function collectUsages(project) {
     usages.get(varId).push({ where, how });
   };
   const HOW = {
-    SET_VAR: 'set', ADD_VAR: 'add', IF_VAR: 'if', SAVE_CHECK: 'save-check',
+    SET_VAR: 'set', ADD_VAR: 'add', SUB_VAR: 'subtract', IF_VAR: 'if', SAVE_CHECK: 'save-check',
     STORE_ACTOR_DIR: 'store direction',
     EXPR_SET: 'set from expression', MATH_FN: 'math',
     VAR_FLAGS_ADD: 'set flags', VAR_FLAGS_CLEAR: 'clear flags',
@@ -67,6 +67,7 @@ export function collectUsages(project) {
       // Recurse into every kind of nested script list.
       if (BRANCHING.includes(ev.type)) { walk(ev.then, where); walk(ev.else, where); }
       if (ev.type === 'ATTACH_SCRIPT') walk(ev.script, `${where} → ${String(ev.button).toUpperCase()} button`);
+      if (ev.type === 'TIMER_ATTACH') walk(ev.script, `${where} → timer ${(ev.timer | 0) + 1}`);
       if (ev.type === 'EVENT_GROUP') {
         walk(ev.events, ev.label ? `${where} → ${ev.label}` : where);
       }
