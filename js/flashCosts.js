@@ -77,9 +77,13 @@ export const FLASH_BOOT_LOGO = 626;
 // pack. Pays for itself many times over on the map data it saves.
 export const FLASH_PACKED_TILES = 134;
 
-// Adding the parts up lands a few percent below a real build, because each was
-// measured alone and none of them sees the others. Measured against real builds
-// of the demo and the all-features project, rounded up. The Export tab applies
-// it so the estimate errs high — the direction that never tells someone a game
-// fits when it does not.
-export const FLASH_SAFETY_MARGIN = 0.02;
+// Adding the engine's parts up lands slightly below a real build, because each
+// was measured alone and none of them sees the others. Measured against real
+// builds of the demo and the all-features project, plus a point of headroom.
+//
+// Charged on **engine code only**, not on the whole estimate: tile maps,
+// sprites, strings and bytecode are literal arrays whose size is known to the
+// byte, so padding them would tax a data-heavy game for an uncertainty it does
+// not have. The Export tab applies it so the estimate errs high — the direction
+// that never tells someone a game fits when it does not.
+export const FLASH_SAFETY_MARGIN = 0.012;

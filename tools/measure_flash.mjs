@@ -339,30 +339,45 @@ let margin = 0;
 
   // The additive model, using the numbers just measured rather than the table
   // on disk, which is what compileProject() would still be holding.
-  const modelTotal = (compiled) => {
+  // Returns { code, total }. The margin is charged on code alone, so the
+  // shortfall has to be expressed against code alone too — measuring it
+  // against the total would make the number depend on how art-heavy the
+  // reference project happens to be.
+  const modelOf = (compiled) => {
     const f = compiled.features;
-    let n = baseline + compiled.flash.dataBytes;
-    for (const [name, bytes] of Object.entries(costs)) if (f[name]) n += bytes;
-    for (const [name, bytes] of Object.entries(opcodes)) if (f[name]) n += bytes;
-    if (!f.MINIMAL_BOOT) n += bootLogo;
-    if (f.PACKED_TILES) n += packedTiles;
-    return n;
+    let code = baseline;
+    for (const [name, bytes] of Object.entries(costs)) if (f[name]) code += bytes;
+    for (const [name, bytes] of Object.entries(opcodes)) if (f[name]) code += bytes;
+    if (!f.MINIMAL_BOOT) code += bootLogo;
+    if (f.PACKED_TILES) code += packedTiles;
+    return { code, total: code + compiled.flash.dataBytes };
   };
 
   for (const [label, project] of [['demo', makeDemoProject()],
     ['all-features', makeAllFeaturesProject()]]) {
     const { compiled } = generateIno(project);
-    const model = modelTotal(compiled);
+    const model = modelOf(compiled);
     const real = flashOf(`cal_${label}`, project);
-    const short = (real - model) / model;
+    const short = (real - model.total) / model.code;
     margin = Math.max(margin, short);
-    console.log(`  ${label.padEnd(16)} model ${model}, real ${real}`
-      + ` — model is ${(short * 100).toFixed(1)}% low`);
+    console.log(`  ${label.padEnd(16)} model ${model.total}, real ${real}`
+      + ` — model is ${(short * 100).toFixed(2)}% of code low`);
   }
-  // Round up to the next whole percent and add one more, so an unmeasured
-  // project shape has somewhere to go before the estimate goes optimistic.
-  margin = Math.max(0, Math.ceil(margin * 100) + 1) / 100;
-  console.log(`  margin: ${(margin * 100).toFixed(0)}%`);
+  // Observed shortfall plus a point of headroom, so an unmeasured project shape
+  // has somewhere to go before the estimate turns optimistic.
+  //
+  // Deliberately smooth. This used to round up to the next whole percent and
+  // then add another, which meant a reference build landing 0.6 points
+  // differently doubled the margin — and every project on the Export tab
+  // appeared to gain a couple of hundred bytes overnight without its author
+  // touching anything. A margin that moves in whole percents is a margin that
+  // lies about what changed.
+  const HEADROOM = 0.01, FLOOR = 0.01, CAP = 0.05;
+  margin = Math.min(CAP, Math.max(FLOOR, margin + HEADROOM));
+  // Two decimal places: enough to move smoothly, not so much that it implies
+  // precision the measurement does not have.
+  margin = Math.round(margin * 1000) / 1000;
+  console.log(`  margin: ${(margin * 100).toFixed(1)}% of engine code`);
 }
 
 // LTO inlines differently between variants, so a cheap subsystem occasionally
@@ -411,11 +426,15 @@ export const FLASH_BOOT_LOGO = ${bootLogo};
 // pack. Pays for itself many times over on the map data it saves.
 export const FLASH_PACKED_TILES = ${packedTiles};
 
-// Adding the parts up lands a few percent below a real build, because each was
-// measured alone and none of them sees the others. Measured against real builds
-// of the demo and the all-features project, rounded up. The Export tab applies
-// it so the estimate errs high — the direction that never tells someone a game
-// fits when it does not.
+// Adding the engine's parts up lands slightly below a real build, because each
+// was measured alone and none of them sees the others. Measured against real
+// builds of the demo and the all-features project, plus a point of headroom.
+//
+// Charged on **engine code only**, not on the whole estimate: tile maps,
+// sprites, strings and bytecode are literal arrays whose size is known to the
+// byte, so padding them would tax a data-heavy game for an uncertainty it does
+// not have. The Export tab applies it so the estimate errs high — the direction
+// that never tells someone a game fits when it does not.
 export const FLASH_SAFETY_MARGIN = ${margin};
 `;
 
