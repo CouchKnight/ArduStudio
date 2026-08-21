@@ -752,7 +752,12 @@ export function compileProject(project) {
           }
           const btn = buttonIndex(ev.button);
           const scriptIdx = addScript(ev.script, scene, `${ctx} → ${ev.button.toUpperCase()} button script`);
-          emitOp(OP.ATTACH_SCRIPT, btn, ev.override ? ATTACH_OVERRIDE : 0, scriptIdx);
+          // Two bytes, as START_SCRIPT and TIMER_ATTACH already use. It was one,
+          // which capped a game at 255 scripts and — worse — made script 255
+          // indistinguishable from NO_SCRIPT on the device, so that button
+          // silently did nothing on hardware while the play test ran it.
+          emitOp(OP.ATTACH_SCRIPT, btn, ev.override ? ATTACH_OVERRIDE : 0,
+            scriptIdx & 0xff, (scriptIdx >> 8) & 0xff);
           break;
         }
         case 'REMOVE_BUTTON_SCRIPT':
@@ -1122,7 +1127,11 @@ export function compileProject(project) {
   function addScript(events, scene, ctx, nonBlocking, owner = ownerActor) {
     if (!events || !events.length) return NO_SCRIPT;
     const idx = scriptOffsets.length;
-    if (idx >= 255) throw new Error('Too many scripts (max 255)');
+    // The ceiling used to be 255, because Attach Script To Button carried its
+    // index in one byte. Every reference is two bytes now and scriptOffsets is
+    // a uint16 table, so the only real limit is NO_SCRIPT needing to stay
+    // distinguishable from a real index. Flash runs out long, long before here.
+    if (idx >= NO_SCRIPT) throw new Error(`Too many scripts (max ${NO_SCRIPT - 1})`);
     scriptOffsets.push(0); // patched in drainScripts()
     pendingScripts.push({ idx, events, scene, ctx, nonBlocking, owner });
     return idx;

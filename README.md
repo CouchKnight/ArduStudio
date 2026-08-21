@@ -217,7 +217,7 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 435 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 444 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
                                 #   actor queries, expressions, switch, animation states, overlay,
                                 #   variable values in text
@@ -300,7 +300,7 @@ npm run check:flash       # compare the estimate against a real AVR build
 
 `check:flash` fails if the estimate drifts past 5% *or* falls below the real size — it has to
 err high, since a warning that arrives too late is the problem it exists to prevent. Currently
-2.7% high on the demo and 1.0% high on the all-features project.
+2.9% high on the demo and 1.0% high on the all-features project.
 
 Both tools build the way the Arduino IDE does, `-flto` included, from a single shared recipe in
 `tools/avr_build.mjs`. That matters more than it sounds: measuring without LTO puts the numbers
@@ -386,8 +386,9 @@ localStorage and can be saved to / loaded from JSON files.
 32 songs × 192 notes · 256 dialogue strings · 8 options per menu (~9 chars each) ·
 6 buttons with one attached script each · 6 projectiles in flight ·
 4 animation states per sprite · 8 Switch options · 4 pieces of drawn text ·
-8-deep scene stack · 3 collision groups plus the player ·
-scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene.
+8-deep scene stack · 3 collision groups plus the player · 4 timers ·
+scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene ·
+12 scripts queued for the VM at once (enough that a full scene's `On Init` scripts always fit).
 
 Roadmap ideas: ArduboyFX data export for asset-heavy games, multiple save slots,
 two-channel music.

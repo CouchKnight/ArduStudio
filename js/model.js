@@ -148,6 +148,16 @@ export const MAX_PROJECTILES = 6;   // pool size, ~12 bytes of RAM each
 export const SCENE_STACK_DEPTH = 8; // Push Scene nesting, 3 bytes per entry
 export const FADE_LEVELS = 16;      // 4x4 Bayer dither steps, 0 = fully visible
 
+// Scripts waiting for the blocking VM. Loading a scene queues one per actor
+// plus the scene's own On Init, so this must be at least
+// MAX_ACTORS_PER_SCENE + 1 or a full scene loses a script before a frame runs.
+// The rest is headroom for collisions and timer ticks landing while it drains.
+//
+// It lives here rather than in each engine because it used to be declared twice
+// — and the two copies enforced it differently, so the device dropped a script
+// the play test kept. A limit both runtimes must agree on belongs in one place.
+export const SCRIPT_QUEUE_DEPTH = 12;
+
 // ---------------------------------------------------------------------------
 // Script lifecycle slots
 // ---------------------------------------------------------------------------
