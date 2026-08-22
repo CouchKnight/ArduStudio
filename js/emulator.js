@@ -5,7 +5,8 @@
 
 import {
   SCENE_W, SCENE_H, TILE,
-  MAX_PROJECTILES, SCENE_STACK_DEPTH, FADE_LEVELS, PROJECTILE_DIRS,
+  MAX_PROJECTILES, SCENE_STACK_DEPTH, FADE_LEVELS, PROJECTILE_DIRS, SCRIPT_QUEUE_DEPTH,
+  MAX_ACTORS_PER_SCENE,
   PROJECTILE_DIR_SOURCE, DIRECTIONS, COLLIDE_PLAYER, groupBit,
 } from './model.js';
 import {
@@ -31,7 +32,6 @@ const ANIM_INTERVAL = 20;       // default frames between animation steps
 const PLAYER_ANIM_INTERVAL = 8;
 const TEXT_CHARS_PER_FRAME = 2;
 const MAX_TILE_OVERRIDES = 16;  // matches the C++ engine's RAM override table
-const SCRIPT_QUEUE_DEPTH = 8;   // pending init/hit scripts waiting for the VM
 
 // 4x4 ordered dither, the cheapest way to fade a 1-bit screen. A pixel survives
 // while its threshold is at or above the current fade level, so level 0 draws
@@ -194,7 +194,11 @@ export class Emulator {
     this.baseTiles = sc.tiles;    // "PROGMEM" map — never mutated
     this.overrides = [];          // SET_TILE lands here, like the C++ RAM table
     for (let i = 0; i < MAX_TIMERS; i++) this.timerScript[i] = NO_SCRIPT;
-    this.actors = sc.actors.map((a) => ({
+    // The device's actor table is a fixed array of MAX_ACTORS_PER_SCENE, and it
+    // clamps anything beyond that. normalizeProject() already trims scenes to
+    // the same limit, so this only matters for a hand-edited project — but the
+    // play test must never run more actors than the hardware would.
+    this.actors = sc.actors.slice(0, MAX_ACTORS_PER_SCENE).map((a) => ({
       def: a,
       // Per-instance copies: `def` is the shared compiled scene object, so
       // events like Set Actor Sprite must never write through it.
@@ -228,10 +232,18 @@ export class Emulator {
     // dialogue, so they queue up rather than all running at once.
     this.scriptQueue = [];
     if (runEnter) {
+      // Bounded exactly as the device bounds it. The play test used to queue
+      // these without a limit, so a scene whose actors filled the queue ran its
+      // own On Init here and silently lost it on hardware — the play test has
+      // to be able to show that, not paper over it.
       for (let i = 0; i < sc.actors.length; i++) {
-        if (sc.actors[i].scripts.init !== NO_SCRIPT) this.scriptQueue.push({ idx: sc.actors[i].scripts.init, self: i });
+        if (sc.actors[i].scripts.init !== NO_SCRIPT && this.scriptQueue.length < SCRIPT_QUEUE_DEPTH) {
+          this.scriptQueue.push({ idx: sc.actors[i].scripts.init, self: i });
+        }
       }
-      if (sc.scripts.init !== NO_SCRIPT) this.scriptQueue.push({ idx: sc.scripts.init, self: 0xff });
+      if (sc.scripts.init !== NO_SCRIPT && this.scriptQueue.length < SCRIPT_QUEUE_DEPTH) {
+        this.scriptQueue.push({ idx: sc.scripts.init, self: 0xff });
+      }
     }
     if (!this.startNextQueued()) this.script.active = false;
   }
@@ -962,7 +974,8 @@ export class Emulator {
         case OP.ATTACH_SCRIPT: {
           const btn = code[s.pc++];
           const flags = code[s.pc++];
-          const scriptIdx = code[s.pc++];
+          const scriptIdx = code[s.pc] | (code[s.pc + 1] << 8);
+          s.pc += 2;
           if (btn < NUM_BUTTONS) {
             this.buttonScript[btn] = scriptIdx;
             if (flags & ATTACH_OVERRIDE) this.buttonOverride |= 1 << btn;

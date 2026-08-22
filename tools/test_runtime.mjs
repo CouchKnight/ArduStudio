@@ -12,6 +12,7 @@ import {
   makeProject, makeSprite as makeSpriteOfType, makeTile as makeTileOfType,
 } from '../js/model.js';
 import { compileProject, TEXT_VAR_MARKER, displayWidth, OP, NO_SCRIPT } from '../js/compiler.js';
+import { SCRIPT_QUEUE_DEPTH, MAX_ACTORS_PER_SCENE } from '../js/model.js';
 import { FLASH_SUBSYSTEM } from '../js/flashCosts.js';
 import { generateIno } from '../js/codegen.js';
 import { compileExpression, evalExpression } from '../js/expression.js';
@@ -1746,13 +1747,20 @@ console.log('— Start Script —');
     const proj = makeDemoProject();
     const a0 = proj.scenes[0].actors[0];
     a0.scripts.interact = [ev('TEXT', { text: 'busy' })];
-    proj.scenes[0].scripts.init = Array.from({ length: 12 },
+    // Deliberately more starts than the queue can hold, derived from the cap
+    // rather than written out - this assertion used to carry the number 8 and
+    // broke the moment the queue was made deeper.
+    const fired = SCRIPT_QUEUE_DEPTH + 4;
+    proj.scenes[0].scripts.init = Array.from({ length: fired },
       () => ev('START_SCRIPT', { target: a0.id, slot: 'interact' }));
     const e = new Emulator(compileProject(proj), { onTone: () => {} });
     for (let i = 0; i < 4; i++) { e.setButtons(0); e.step(); }
-    // 12 starts, 8 accepted and 4 dropped; then the init script ends and the VM
-    // pulls one off to run, leaving 7 waiting.
-    assert(e.scriptQueue.length === 7, `queue capped and dropped the rest (${e.scriptQueue.length} waiting, expected 7)`);
+    // The queue takes what it can and drops the overflow; then the init script
+    // ends and the VM pulls one off to run, leaving one short of a full queue.
+    const want = SCRIPT_QUEUE_DEPTH - 1;
+    assert(e.scriptQueue.length === want,
+      `queue capped at ${SCRIPT_QUEUE_DEPTH}, dropped the other ${fired - SCRIPT_QUEUE_DEPTH} `
+      + `(${e.scriptQueue.length} waiting, expected ${want})`);
     assert(!!e.text, 'and the VM is still running the first one, not wedged');
   }
 }
@@ -2447,6 +2455,112 @@ console.log('— generated sketch integrity —');
     assert(!ino.includes('${'),
       `[${label}] the generated sketch has no unresolved template placeholders`);
   }
+}
+
+console.log('— a full scene keeps its own On Init —');
+{
+  // The bug this guards: a scene where every actor has an On Init queued one
+  // script per actor and then the scene's own, and the queue was exactly one
+  // slot too small. The device dropped the scene's On Init in silence while the
+  // play test ran it, so a Show Actor and an Attach Script To Button that lived
+  // there worked in ArduStudio and not on hardware.
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+
+  const proj = makeDemoProject();
+  const sc = proj.scenes[0];
+  const [marker, counter] = proj.variables;
+  sc.actors.length = 0;
+  for (let i = 0; i < MAX_ACTORS_PER_SCENE; i++) {
+    const a = makeActorOfType(`A${i}`, proj.sprites[1].id, 1 + i, 6);
+    a.scripts.init = [ev('ADD_VAR', { varId: counter.id, delta: 1 })];
+    sc.actors.push(a);
+  }
+  // The script that used to vanish.
+  sc.scripts.init = [ev('SET_VAR', { varId: marker.id, value: 99 })];
+
+  const c = compileProject(proj);
+  const e = new Emulator(c, { onTone: () => {} });
+  for (let i = 0; i < 120; i++) e.step();
+
+  assert(sc.actors.length === MAX_ACTORS_PER_SCENE,
+    `the scene is full (${sc.actors.length} actors, all with an On Init)`);
+  assert(e.vars[1] === MAX_ACTORS_PER_SCENE,
+    `every actor's On Init ran (${e.vars[1]} of ${MAX_ACTORS_PER_SCENE})`);
+  assert(e.vars[0] === 99, "and the scene's own On Init ran too, rather than being dropped");
+
+  // The queue has to be able to hold them all at once, or the drop comes back.
+  assert(SCRIPT_QUEUE_DEPTH >= MAX_ACTORS_PER_SCENE + 1,
+    `the queue holds every actor's On Init plus the scene's (${SCRIPT_QUEUE_DEPTH} >= ${MAX_ACTORS_PER_SCENE + 1})`);
+}
+
+console.log('— the play test is never more permissive than the device —');
+{
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+  // Same shape as the generated sketch's loadScene: queue each actor's On Init
+  // and then the scene's, both bounded. Whatever the cap is, the play test must
+  // stop at it rather than sailing past — being more generous here is what
+  // hides a hardware bug instead of showing it.
+  const proj = makeDemoProject();
+  const sc = proj.scenes[0];
+  sc.actors.length = 0;
+  for (let i = 0; i < MAX_ACTORS_PER_SCENE; i++) {
+    const a = makeActorOfType(`A${i}`, proj.sprites[1].id, 1 + i, 6);
+    a.scripts.init = [ev('WAIT', { frames: 30 })];   // each holds the VM a while
+    sc.actors.push(a);
+  }
+  sc.scripts.init = [ev('WAIT', { frames: 30 })];
+
+  const e = new Emulator(compileProject(proj), { onTone: () => {} });
+  assert(e.scriptQueue.length <= SCRIPT_QUEUE_DEPTH,
+    `loadScene never queues past the cap (${e.scriptQueue.length} <= ${SCRIPT_QUEUE_DEPTH})`);
+  // One is running, the rest are waiting: 8 actors + the scene = 9 total.
+  assert(e.scriptQueue.length === MAX_ACTORS_PER_SCENE,
+    `and queues all of them (${e.scriptQueue.length} waiting behind the one running)`);
+}
+
+console.log('— a button script beyond index 254 —');
+{
+  // ATTACH_SCRIPT used to carry its script index in a single byte, with 0xFF
+  // meaning "nothing attached" on the device. Script 255 was therefore
+  // indistinguishable from no script at all: the button silently did nothing on
+  // hardware while the play test ran it, and anything past 255 wrapped round and
+  // ran a different script entirely. Both engines now carry two bytes.
+  const ev = (type, fields) => Object.assign(makeEventOfType(type), fields);
+  const proj = makeDemoProject();
+  const sc = proj.scenes[0];
+  const [marker] = proj.variables;
+
+  // The demo opens with a dialogue, and B skips the typewriter — it would eat
+  // the button press this test depends on. Clear it.
+  sc.scripts.init = [];
+
+  // Pad the project past 255 compiled scripts, so the button's own script index
+  // lands well beyond what a byte can hold.
+  const pad = sc.actors[0];
+  pad.scripts.init = [];
+  for (let i = 0; i < 300; i++) {
+    pad.scripts.init.push(ev('ATTACH_SCRIPT', {
+      button: 'b', override: false, script: [ev('WAIT', { frames: 1 })],
+    }));
+  }
+  // The one that matters, attached last so it wins the slot and takes the
+  // highest script index. B rather than A, because A is also the interact
+  // button and the villager's dialogue would answer the press first.
+  pad.scripts.init.push(ev('ATTACH_SCRIPT', {
+    button: 'b', override: false, script: [ev('SET_VAR', { varId: marker.id, value: 77 })],
+  }));
+
+  const c = compileProject(proj);
+  assert(c.scriptOffsets.length > 255,
+    `the project really does have more than 255 scripts (${c.scriptOffsets.length})`);
+
+  const e = new Emulator(c, { onTone: () => {} });
+  for (let i = 0; i < 600 && e.script.active; i++) { e.setButtons(0); e.step(); }
+  assert(!e.script.active, 'the padding init finished before the button was pressed');
+  press(e, BTN.B);
+  for (let i = 0; i < 20; i++) { e.setButtons(0); e.step(); }
+  assert(e.vars[0] === 77,
+    `a button script with an index past 255 still runs (marker ${e.vars[0]})`);
 }
 
 console.log('— editor wiring —');

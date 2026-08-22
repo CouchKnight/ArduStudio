@@ -5,22 +5,22 @@
 // engine changes; tools/test_runtime.mjs checks these against a real build so
 // they cannot drift silently.
 //
-// Measured 2026-08-20.
+// Measured 2026-08-22.
 
 // Usable flash on an Arduboy once the bootloader has its share.
 export const FLASH_BUDGET = 28672;
 
 // A game with no optional subsystems and no optional opcodes: the Arduboy2
 // library, the engine's always-on core, and a script that sets one variable.
-export const FLASH_BASELINE = 12988;
+export const FLASH_BASELINE = 11472;
 
 // Extra bytes each subsystem adds when a game scripts it.
 export const FLASH_SUBSYSTEM = {
   MENUS: 1030,
   PROJECTILES: 912,
   EXPR: 894,
-  OVERLAY: 690,
-  BUTTON_SCRIPTS: 472,
+  OVERLAY: 688,
+  BUTTON_SCRIPTS: 518,
   TIMERS: 382,
   SAVES: 368,
   FADE: 310,
@@ -71,7 +71,7 @@ export const FLASH_OPCODE = {
 
 // Leaving the Arduboy startup logo in (Export tab: "Skip the Arduboy boot
 // logo"). The baseline above boots straight into the game.
-export const FLASH_BOOT_LOGO = 626;
+export const FLASH_BOOT_LOGO = 604;
 
 // Reading bit-packed scene tile maps, for a game with a scene small enough to
 // pack. Pays for itself many times over on the map data it saves.
@@ -86,4 +86,4 @@ export const FLASH_PACKED_TILES = 134;
 // byte, so padding them would tax a data-heavy game for an uncertainty it does
 // not have. The Export tab applies it so the estimate errs high — the direction
 // that never tells someone a game fits when it does not.
-export const FLASH_SAFETY_MARGIN = 0.012;
+export const FLASH_SAFETY_MARGIN = 0.014;

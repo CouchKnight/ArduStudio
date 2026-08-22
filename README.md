@@ -217,7 +217,7 @@ tools/build_avr.sh        real avr-gcc build against real Arduboy2 → game.hex
 ## Verification
 
 ```bash
-node tools/test_runtime.mjs     # 435 assertions: playthrough, camera, saves, songs, menus, LED,
+node tools/test_runtime.mjs     # 444 assertions: playthrough, camera, saves, songs, menus, LED,
                                 #   input, lifecycle slots, collisions, projectiles, scene stack,
                                 #   actor queries, expressions, switch, animation states, overlay,
                                 #   variable values in text
@@ -240,11 +240,11 @@ Against the ATmega32u4's 28,672 bytes of usable flash and 2,560 bytes of RAM:
 
 | Project | Flash | RAM |
 |---|---|---|
-| Empty project (the floor) | 12,960 | 1,726 |
-| Key Quest demo | 16,032 | 1,803 |
-| Every subsystem and every event at once | 23,420 | 1,952 |
+| Empty project (the floor) | 11,444 | 1,635 |
+| Key Quest demo | 14,516 | 1,714 |
+| Every subsystem and every event at once | 22,006 | 1,883 |
 
-Even a game using *everything* leaves ~6 KB for its own scenes and art, and a typical one has
+Even a game using *everything* leaves ~6.5 KB for its own scenes and art, and a typical one has
 far more.
 
 ### What the engine gives up to be this small
@@ -300,12 +300,20 @@ npm run check:flash       # compare the estimate against a real AVR build
 
 `check:flash` fails if the estimate drifts past 5% *or* falls below the real size — it has to
 err high, since a warning that arrives too late is the problem it exists to prevent. Currently
-2.7% high on the demo and 1.0% high on the all-features project.
+3.0% high on the demo and 0.9% high on the all-features project.
 
-Both tools build the way the Arduino IDE does, `-flto` included, from a single shared recipe in
-`tools/avr_build.mjs`. That matters more than it sounds: measuring without LTO puts the numbers
-several hundred bytes off, which is the difference between a game that fits and one that
-doesn't. Each subsystem is measured alone, so `measure:flash` finishes by comparing the summed
+Both tools build the way the Arduino IDE does, from a single shared recipe in
+`tools/avr_build.mjs`. Two details of that matter more than they sound, because each one is
+worth more than the margin between fitting and not:
+
+- **`-flto`**, which the IDE uses. Without it the link comes out several hundred bytes heavy.
+- **The core is archived into `core.a` and linked as an archive**, not named as loose object
+  files. A linker pulls an archive member in only when it resolves an undefined symbol, so the
+  core's `HardwareSerial`, `Serial1`, `IPAddress` and `String` — none of which an Arduboy sketch
+  can reach — never come in. Linking them loose made every measurement **1,516 bytes of flash
+  and 185 of RAM** heavier than the IDE's own figure for the same sketch, which is enough to
+  tell someone a game at 98% that it does not fit. `check:flash` now fails if any of those
+  symbols reappear in the binary. Each subsystem is measured alone, so `measure:flash` finishes by comparing the summed
 model against real builds and publishing the shortfall as a safety margin — the estimate stays
 on the high side by construction rather than by luck.
 
@@ -386,8 +394,9 @@ localStorage and can be saved to / loaded from JSON files.
 32 songs × 192 notes · 256 dialogue strings · 8 options per menu (~9 chars each) ·
 6 buttons with one attached script each · 6 projectiles in flight ·
 4 animation states per sprite · 8 Switch options · 4 pieces of drawn text ·
-8-deep scene stack · 3 collision groups plus the player ·
-scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene.
+8-deep scene stack · 3 collision groups plus the player · 4 timers ·
+scenes from 1×1 to 4×4 screens (16×8 … 64×32 tiles) · 16 live `Set Tile` changes per scene ·
+12 scripts queued for the VM at once (enough that a full scene's `On Init` scripts always fit).
 
 Roadmap ideas: ArduboyFX data export for asset-heavy games, multiple save slots,
 two-channel music.

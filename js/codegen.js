@@ -8,7 +8,7 @@
 
 import { compileProject, NO_SCRIPT, packTilemap } from './compiler.js';
 import {
-  MAX_PROJECTILES, SCENE_STACK_DEPTH, FADE_LEVELS,
+  MAX_PROJECTILES, SCENE_STACK_DEPTH, FADE_LEVELS, SCRIPT_QUEUE_DEPTH,
   PROJECTILE_DIRS, DIRECTIONS,
 } from './model.js';
 import { EXPR_STACK, EX } from './expression.js';
@@ -38,7 +38,6 @@ const PROJ_TABLE = (() => {
 // Direction codes by name, so the generated engine cannot drift from the model.
 const DIR_CODE = Object.fromEntries(DIRECTIONS.map((d) => [d.key, d.code]));
 
-const SCRIPT_QUEUE_DEPTH = 8;
 
 // Optional engine subsystems are marked in the generated source with
 //   //#IF FEATURE … //#ENDIF        (kept only when the game uses it)
@@ -341,6 +340,11 @@ uint8_t sceneStackTop = 0;
 
 // Init and hit scripts waiting for the VM to become free.
 #define SCRIPT_QUEUE_DEPTH ${SCRIPT_QUEUE_DEPTH}
+// Loading a scene queues one script per actor plus the scene's own On Init, and
+// dropping any of those is a silent, baffling bug on hardware. Fail the build
+// instead if the queue is ever made too small to hold them.
+static_assert(SCRIPT_QUEUE_DEPTH >= MAX_SCENE_ACTORS + 1,
+              "the script queue must hold every actor's On Init plus the scene's");
 #define MAX_TIMERS ${MAX_TIMERS}
 struct QueuedScript { uint16_t idx; uint8_t self; };
 QueuedScript scriptQueue[SCRIPT_QUEUE_DEPTH];
@@ -476,7 +480,7 @@ const uint8_t buttonBits[NUM_BUTTONS] PROGMEM = {
 };
 // Scripts attached to buttons persist across scene changes until removed.
 //#IF BUTTON_SCRIPTS
-uint8_t buttonScript[NUM_BUTTONS];
+uint16_t buttonScript[NUM_BUTTONS];  // NO_SCRIPT when nothing is attached
 uint8_t buttonOverride = 0;
 //#ENDIF
 //#IF TIMERS
@@ -514,7 +518,7 @@ bool anyJustPressed(uint8_t mask) {
 uint8_t overriddenMask() {
   uint8_t mask = 0;
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
-    if (buttonScript[i] != 0xFF && (buttonOverride & (1 << i))) {
+    if (buttonScript[i] != NO_SCRIPT && (buttonOverride & (1 << i))) {
       mask |= pgm_read_byte(&buttonBits[i]);
     }
   }
@@ -1524,7 +1528,8 @@ void runScript(ScriptCtx& s) {
       case 23: { // ATTACH_SCRIPT
         uint8_t btn = codeAt(s.pc++);
         uint8_t flags = codeAt(s.pc++);
-        uint8_t idx = codeAt(s.pc++);
+        uint16_t idx = codeAt(s.pc) | ((uint16_t)codeAt(s.pc + 1) << 8);
+        s.pc += 2;
         if (btn < NUM_BUTTONS) {
           buttonScript[btn] = idx;
           if (flags & ATTACH_OVERRIDE) buttonOverride |= (1 << btn);
@@ -1537,7 +1542,7 @@ void runScript(ScriptCtx& s) {
       case 24: { // REMOVE_BUTTON_SCRIPT
         uint8_t btn = codeAt(s.pc++);
         if (btn < NUM_BUTTONS) {
-          buttonScript[btn] = 0xFF;
+          buttonScript[btn] = NO_SCRIPT;
           buttonOverride &= ~(1 << btn);
         }
         break;
@@ -2056,7 +2061,7 @@ void updateTimers() {
 //#IF BUTTON_SCRIPTS
 void checkButtonScripts() {
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
-    if (buttonScript[i] == 0xFF) continue;
+    if (buttonScript[i] == NO_SCRIPT) continue;
     if (arduboy.justPressed(pgm_read_byte(&buttonBits[i]))) {
       startScript(buttonScript[i], 0xFF);
       return;
@@ -2270,7 +2275,7 @@ void setup() {
   arduboy.setFrameRate(60);
   for (uint8_t i = 0; i < NUM_VARS; i++) vars[i] = 0;
 //#IF BUTTON_SCRIPTS
-  for (uint8_t i = 0; i < NUM_BUTTONS; i++) buttonScript[i] = 0xFF;
+  for (uint8_t i = 0; i < NUM_BUTTONS; i++) buttonScript[i] = NO_SCRIPT;
 //#ENDIF
   player.fx = 0; player.fy = 1;
   player.frame = 0; player.anim = 0;
