@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { execFileSync } from 'node:child_process';
 import { requireObjects, makeFlashMeasurer } from './avr_build.mjs';
 
 import { makeDemoProject } from '../js/model.js';
@@ -51,6 +52,34 @@ for (const [label, project] of [['demo', makeDemoProject()], ['all-features', ma
     failed = true;
     console.error('  FAILED: the estimate is UNDER the real size. It must err high, or a');
     console.error('  game that will not fit gets told it does.');
+  }
+}
+
+// The core is linked as an archive, so members nothing references never come in.
+// Nothing in an Arduboy sketch can reach the second UART, IPAddress or the
+// String class, so if any of them turn up in the binary the link method has
+// regressed to naming core objects loose on the command line — which silently
+// added 1,516 bytes of flash and 185 of RAM to every measurement here, and told
+// a user with a game at 98% that it would not fit.
+{
+  const elf = join(work, 'demo.elf');
+  const syms = execFileSync('avr-nm', ['--print-size', '--size-sort', '-S', elf],
+    { encoding: 'utf8' });
+  const dead = [
+    ['Serial1', /\bSerial1\b/],
+    ['HardwareSerial', /HardwareSerial/],
+    ['IPAddress', /IPAddress/],
+    ['String', /_ZN6String/],
+  ].filter(([, re]) => re.test(syms)).map(([name]) => name);
+
+  if (dead.length) {
+    failed = true;
+    console.error(`[link] FAILED: the binary contains core code no Arduboy sketch can call `
+      + `(${dead.join(', ')}).`);
+    console.error('  The Arduino core must be linked as build-avr/core.a, not as loose');
+    console.error('  object files — see tools/avr_build.mjs.');
+  } else {
+    console.log('[link] OK — no unreachable core code linked in (core.a, as the IDE does)');
   }
 }
 

@@ -75,18 +75,36 @@ CFLAGS="-c -g -Os -w -flto -ffunction-sections -fdata-sections -mmcu=atmega32u4 
 -DF_CPU=16000000L -DARDUINO=10819 -DARDUINO_AVR_LEONARDO -DARDUINO_ARCH_AVR \
 -DUSB_VID=0x2341 -DUSB_PID=0x8036 -DUSB_MANUFACTURER=\"ArduinoLLC\" -DUSB_PRODUCT=\"Leonardo\" \
 -I$OUT/core -I$OUT/ab2 -I$OUT/tones"
-rm -f "$OUT/obj/"*
+rm -rf "$OUT/obj" "$OUT/core.a"
+mkdir -p "$OUT/obj/core" "$OUT/obj/lib"
 for f in "$OUT"/core/*.c; do
-  avr-gcc $CFLAGS -std=gnu11 "$f" -o "$OUT/obj/$(basename "$f").o"
+  avr-gcc $CFLAGS -std=gnu11 "$f" -o "$OUT/obj/core/$(basename "$f").o"
 done
-for f in "$OUT"/core/*.cpp "$OUT"/ab2/*.cpp "$OUT"/tones/*.cpp "$OUT/sketch.cpp"; do
+for f in "$OUT"/core/*.cpp; do
   avr-g++ $CFLAGS -std=gnu++11 -fpermissive -fno-exceptions -fno-threadsafe-statics \
-    "$f" -o "$OUT/obj/$(basename "$f").o"
+    "$f" -o "$OUT/obj/core/$(basename "$f").o"
 done
+for f in "$OUT"/ab2/*.cpp "$OUT"/tones/*.cpp; do
+  avr-g++ $CFLAGS -std=gnu++11 -fpermissive -fno-exceptions -fno-threadsafe-statics \
+    "$f" -o "$OUT/obj/lib/$(basename "$f").o"
+done
+avr-g++ $CFLAGS -std=gnu++11 -fpermissive -fno-exceptions -fno-threadsafe-statics \
+  "$OUT/sketch.cpp" -o "$OUT/obj/sketch.cpp.o"
+
+# The core goes into an archive, exactly as the Arduino IDE builds it. This is
+# not housekeeping: a linker pulls an archive member in only when it resolves an
+# undefined symbol, while a loose .o named on the command line is linked
+# unconditionally and --gc-sections cannot undo that. Linking the core loose
+# dragged in HardwareSerial, Serial1 and friends that no Arduboy sketch can ever
+# call — 1,516 bytes of flash and 185 of RAM heavier than the IDE's own figure,
+# which is enough to tell someone their game does not fit when it does.
+# avr-gcc-ar, not avr-ar: these are LTO objects and need the plugin.
+echo "== archiving the core (as the Arduino IDE does) =="
+avr-gcc-ar rcs "$OUT/core.a" "$OUT/obj/core/"*.o
 
 echo "== linking =="
 avr-gcc -w -Os -g -flto -fuse-linker-plugin -Wl,--gc-sections -mmcu=atmega32u4 \
-  -o "$OUT/game.elf" "$OUT/obj/"*.o -lm
+  -o "$OUT/game.elf" "$OUT/obj/sketch.cpp.o" "$OUT/obj/lib/"*.o "$OUT/core.a" -lm
 avr-objcopy -O ihex -R .eeprom "$OUT/game.elf" "$OUT/game.hex"
 avr-size "$OUT/game.elf"
 echo "OK: $OUT/game.hex is flashable to an Arduboy / FX / FX-C."

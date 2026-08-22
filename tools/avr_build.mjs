@@ -8,8 +8,16 @@
 // does, and they can only stay that way from a single definition.
 //
 // Object files for the Arduino core and the Arduboy libraries are reused from
-// whatever tools/build_avr.sh last left in build-avr/obj, which makes each
-// variant a couple of seconds instead of a full rebuild.
+// whatever tools/build_avr.sh last left in build-avr, which makes each variant
+// a couple of seconds instead of a full rebuild.
+//
+// The core is linked as an archive (build-avr/core.a) and the libraries as
+// loose objects, which is how the Arduino IDE does it. That distinction is the
+// whole ballgame for size: an archive member is pulled in only when it resolves
+// an undefined symbol, so the core's HardwareSerial, Serial1, IPAddress and the
+// rest — none of which an Arduboy sketch can reach — stay out. Linking the core
+// loose, as this used to, made every measurement 1,516 bytes of flash and 185
+// of RAM heavier than the figure the IDE reports for the same sketch.
 
 import { execFileSync } from 'node:child_process';
 import { readdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -31,19 +39,22 @@ export const AVR_LDFLAGS = [
 ];
 
 // Exits with a usable message rather than a stack trace when the prerequisite
-// build has not been run.
+// build has not been run — or was left by an older layout that had no core.a.
 export function requireObjects(out) {
-  if (existsSync(join(out, 'obj'))) return;
-  console.error('No build-avr/obj — run tools/build_avr.sh once so the core and');
-  console.error('library objects exist, then run this again.');
+  if (existsSync(join(out, 'core.a')) && existsSync(join(out, 'obj', 'lib'))) return;
+  console.error('No build-avr/core.a — run tools/build_avr.sh once so the core');
+  console.error('archive and library objects exist, then run this again.');
   process.exit(1);
 }
 
 // Returns flashOf(label, ino) -> bytes of flash the sketch occupies.
 export function makeFlashMeasurer(out, work) {
-  const fixedObjects = readdirSync(join(out, 'obj'))
-    .filter((f) => f.endsWith('.o') && f !== 'sketch.cpp.o')
-    .map((f) => join(out, 'obj', f));
+  // Libraries loose, then the core archive last: an archive only satisfies
+  // symbols left undefined by everything before it on the command line.
+  const libObjects = readdirSync(join(out, 'obj', 'lib'))
+    .filter((f) => f.endsWith('.o'))
+    .map((f) => join(out, 'obj', 'lib', f));
+  const fixedObjects = [...libObjects, join(out, 'core.a')];
 
   return function flashOf(label, ino) {
     const cpp = join(work, `${label}.cpp`);
